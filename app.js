@@ -89,7 +89,7 @@ function render() {
   $('#nav').innerHTML = '';
   if (S.mode === 'firebase' && !S.user) return vLogin();
   if (!SIMS.length && !['dados', 'login'].includes(VIEW.v)) return vVazio();
-  const f = { home: vHome, setup: vSetup, run: vRun, result: vResult, perf: vPerf, mat: vMat, rev: vRev, discs: vDiscs, disc: vDisc, dados: vDados, hist: vHist, rel: vRel }[VIEW.v] || vHome;
+  const f = { home: vHome, setup: vSetup, run: vRun, result: vResult, perf: vPerf, mat: vMat, rev: vRev, discs: vDiscs, disc: vDisc, dados: vDados, hist: vHist, rel: vRel, banco: vBanco }[VIEW.v] || vHome;
   f();
 }
 function header(title, back = 'home') {
@@ -143,6 +143,7 @@ function vHome() {
   <div class="grid">
     <button class="mode" data-v="rel"><span class="tag">Novo</span><b>Relatório</b><span class="mut sm">Diagnóstico por matéria, assunto e simulado: chutes, erros com convicção, evolução e projeção da nota.</span></button>
     <button class="mode" data-v="perf"><b>Desempenho</b><span class="mut sm">Por matéria e assunto, com filtro de certeza e estratégia de prova.</span></button>
+    <button class="mode" data-v="banco"><b>Banco de questões</b><span class="mut sm">Filtre o que errou, a certeza, a matéria, o assunto e a revisão para estudar ou refazer.</span></button>
     <button class="mode" data-v="rev"><b>Para revisão (${nrev})</b><span class="mut sm">Itens marcados, com as suas anotações.</span></button>
     <button class="mode" data-v="hist"><b>Histórico</b><span class="mut sm">Provas e blocos encerrados.</span></button>
     <button class="mode" data-v="discs"><b>Discursivas</b><span class="mut sm">Escreva em até 30 linhas e compare com o espelho.</span></button>
@@ -342,10 +343,10 @@ function vRun() {
   };
   const ok = r.r && r.r === q.gabarito;
   const verd = !rev ? '' : anulada(q) ? `<div class="verdict nil">Item ANULADO no gabarito definitivo${q.gabarito_preliminar ? ` (preliminar: ${q.gabarito_preliminar === 'C' ? 'Certo' : 'Errado'})` : ''} — não conta na nota.</div>`
-    : !r.r ? `<div class="verdict nil">Em branco — gabarito: ${q.gabarito === 'C' ? 'Certo' : 'Errado'}</div>`
+    : !r.r ? `<div class="verdict nil">${s.tmp ? 'Não respondido' : 'Em branco'} — gabarito: ${q.gabarito === 'C' ? 'Certo' : 'Errado'}</div>`
     : `<div class="verdict ${ok ? 'ok' : 'bad'}">${ok ? 'Você acertou' : 'Você errou'} — gabarito: ${q.gabarito === 'C' ? 'Certo' : 'Errado'}${r.c ? ` · certeza ${r.c} (${CONF[r.c].toLowerCase()})` : ''}${q.alterado ? ' · gabarito alterado no definitivo' : ''}</div>`;
   const ctx = q._ctx ? (plain(q._ctx).length > 420 ? `<details class="ctx" ${R.ctxOpen !== false ? 'open' : ''}><summary>Texto de apoio</summary>${q._ctx}</details>` : `<div class="ctx">${q._ctx}</div>`) : '';
-  const titulo = R.review ? 'Revisão · ' + esc(s.nome) : esc(modo.nome) + (s.modo === 'prova' ? ' · ' + bloco(q) : '');
+  const titulo = s.tmp ? 'Estudo · banco de questões' : R.review ? 'Revisão · ' + esc(s.nome) : esc(modo.nome) + (s.modo === 'prova' ? ' · ' + bloco(q) : '');
   app().innerHTML = `
   <div class="top">
     <div class="l1">
@@ -383,7 +384,7 @@ function vRun() {
   ${hist(qid).length > 1 ? `<p class="mut xs" style="margin-top:8px">Histórico: ${hist(qid).map(h => h.r === 'B' ? 'branco' : (h.ok ? '✓' : '✗') + (h.c ? h.c : '')).join(' · ')}</p>` : ''}` : ''}`;
   const last = R.i === R.list.length - 1;
   let main;
-  if (R.review) main = last ? `<button class="btn pri" id="fim-rev">${s.status === 'andamento' ? 'Voltar a resolver' : 'Voltar ao resultado'}</button>` : `<button class="btn pri" id="next">Próximo</button>`;
+  if (R.review) main = last ? `<button class="btn pri" id="fim-rev">${s.tmp ? 'Voltar ao banco' : s.status === 'andamento' ? 'Voltar a resolver' : 'Voltar ao resultado'}</button>` : `<button class="btn pri" id="next">Próximo</button>`;
   else if (s.modo === 'item' && !rev) main = `<button class="btn pri" id="confirm" ${r.r && r.c ? '' : 'disabled'}>${r.r && !r.c ? 'Marque a certeza' : 'Confirmar e ver comentário'}</button>`;
   else if (last) main = s.modo === 'item' ? `<button class="btn pri" id="fim-item">Concluir bloco</button>` : `<button class="btn pri" id="fim">${s.modo === 'final' ? 'Encerrar e corrigir' : 'Encerrar e ver resultado'}</button>`;
   else main = `<button class="btn pri" id="next">${s.modo === 'item' || rev || r.ext ? 'Próximo item' : r.r ? 'Confirmar e seguir' : 'Pular'}</button>`;
@@ -408,6 +409,7 @@ function vRun() {
     if (b.id === 't-rev') { setQ(qid, { rev: !S1.rev }); return vRun(); }
     if (b.id === 'ass') return assuntoSheet(q);
     if (b.id === 'grid') return gridSheet();
+    if (b.id === 'close' && s.tmp) return go('banco');
     if (b.id === 'close') { if (R.review) return s.status === 'andamento' ? startRun(s, { i: R.back ?? s.cur }) : go('result', { ses: s.id }); return go('home'); }
     if (e.target.closest('summary')) R.ctxOpen = !e.target.closest('details').open;
   };
@@ -425,6 +427,7 @@ function vRun() {
     if (id === 'confirm') confirmarItem(qid);
     if (id === 'fim') { const falta = R.list.filter(x => !(s.resp[x] || {}).r).length; confirmBox(`Encerrar ${s.modo === 'prova' ? 'a prova' : 'o bloco'}?${falta ? ` ${falta} item(ns) ficarão em branco.` : ''}`, () => encerrar(false)); }
     if (id === 'fim-item') encerrar(false);
+    if (id === 'fim-rev' && s.tmp) return go('banco');
     if (id === 'fim-rev') { if (s.status === 'andamento') startRun(s, { i: R.back ?? s.cur }); else go('result', { ses: s.id }); }
   };
 }
@@ -786,6 +789,79 @@ function relSimulado() {
   <div class="card">${frases.map(x => `<p>${x}</p>`).join('')}${st.resp ? quadBar(st) + LEG_QUAD : ''}</div>
   ${resp.length ? `<h2>Por matéria</h2><div class="card scroll"><table class="t"><thead><tr><th>Matéria</th><th>Resp.</th><th>Acerto</th><th>Líq.</th><th>Chute</th><th>Conv. err.</th>${ant ? '<th class="hide-sm">Antes</th>' : ''}</tr></thead><tbody>${resp.sort((a, b) => (a.s1.ac ?? 0) - (b.s1.ac ?? 0)).map(x => `<tr data-mat="${esc(x.m)}" style="cursor:pointer"><td>${esc(x.m)}</td><td>${x.s1.resp}/${x.n}</td><td>${pctTxt(x.s1.ac)}</td><td class="${x.s1.liq < 0 ? 'neg' : ''}">${sgn(x.s1.liq)}</td><td>${x.s1.sorte}</td><td>${x.s1.eng}</td>${ant ? `<td class="hide-sm">${pctTxt(x.s0 && x.s0.ac)}</td>` : ''}</tr>`).join('')}</tbody></table>${ant ? `<p class="mut xs" style="margin-top:6px">"Antes" = mesma matéria na ${esc(ant.nome.replace('Estratégia · ', ''))}.</p>` : ''}</div>` : ''}
   ${st.ids.eng.length ? `<div class="row" style="margin-top:12px"><button class="btn pri" data-train="${st.ids.eng.join(',')}" data-nome="${esc(sim.nome)} · erros com convicção">Revisar erros com convicção (${st.ids.eng.length})</button></div>` : ''}`;
+}
+
+/* ===================== banco de questões (filtros para estudo) ===================== */
+const FILTROS = {
+  res: [['err', 'Errei'], ['ac', 'Acertei'], ['br', 'Em branco'], ['nunca', 'Nunca respondi']],
+  cert: [['3', '3 · Muito'], ['2', '2 · Médio'], ['1', '1 · Pouco'], ['0', 'Sem nível']],
+  out: [['rev', 'Em revisão'], ['nota', 'Com anotação minha'], ['alt', 'Gabarito alterado/anulado'], ['nr', 'Com nota de revisão']],
+};
+function BF() { return Object.assign({ sims: [], mats: [], ass: [], res: [], cert: [], out: [], basis: 'last' }, S.prefs.banco || {}); }
+function filtraBanco(F) {
+  return Object.values(Q).filter(q => {
+    if (F.sims.length && !F.sims.includes(q.sim)) return false;
+    if (F.mats.length && !F.mats.includes(q.materia)) return false;
+    if (F.ass.length && !F.ass.includes(assuntoCod(q))) return false;
+    const a = pick(q.id, F.basis), s = st(q.id);
+    if (F.res.length) {
+      const k = !a ? 'nunca' : a.r === 'B' ? 'br' : anulada(q) ? 'x' : a.ok ? 'ac' : 'err';
+      if (!F.res.includes(k)) return false;
+    }
+    if (F.cert.length) { if (!a || a.r === 'B' || !F.cert.includes(String(a.c || 0))) return false; }
+    for (const o of F.out) {
+      if (o === 'rev' && !s.rev) return false;
+      if (o === 'nota' && !(s.a1 || s.a2)) return false;
+      if (o === 'alt' && !q.alterado) return false;
+      if (o === 'nr' && !q.nota_revisao) return false;
+    }
+    return true;
+  });
+}
+function vBanco() {
+  const F = BF(), lista = filtraBanco(F), lim = VIEW.lim || 40;
+  const ativos = ['sims', 'mats', 'ass', 'res', 'cert', 'out'].reduce((t, k) => t + F[k].length, 0);
+  const trecho = h => { const t = plain(h); if (t.length <= 170) return t; const c = t.slice(-170); return '…' + c.slice(c.indexOf(' ') + 1); };
+  const assOpts = F.mats.length === 1 ? (TAX[F.mats[0]] || []) : [];
+  const grupo = (id, titulo, opts, sel) => `<label class="f">${titulo}</label><div class="chips" data-g="${id}">${opts.map(([k, l]) => `<button class="chip" aria-pressed="${sel.includes(k)}" data-x="${esc(k)}">${esc(l)}</button>`).join('')}</div>`;
+  const badge = q => { const a = pick(q.id, F.basis); if (!a) return '<span class="tag" style="background:var(--soft);color:var(--mut)">não respondido</span>'; if (a.r === 'B') return '<span class="tag" style="background:var(--soft);color:var(--mut)">em branco</span>'; if (anulada(q)) return '<span class="tag warn">anulado</span>'; return `<span class="tag" style="${a.ok ? '' : 'background:var(--bad);color:#fff'}">${a.ok ? 'acertou' : 'errou'}${a.c ? ' · certeza ' + a.c : ''}</span>`; };
+  app().innerHTML = header('Banco de questões') + `
+  <p class="mut sm">Filtre para estudar: dentro de cada grupo, marque uma ou mais opções; entre grupos, todos os filtros valem juntos. Grupo sem nada marcado = sem filtro.</p>
+  <details class="card" id="b-filt" ${VIEW.fopen ?? true ? 'open' : ''}><summary style="cursor:pointer;font-weight:800">Filtros${ativos ? ` · ${ativos} ativo(s)` : ''}</summary>
+    ${grupo('res', 'Resultado', FILTROS.res, F.res)}
+    ${grupo('cert', 'Certeza marcada', FILTROS.cert, F.cert)}
+    ${grupo('out', 'Outros', FILTROS.out, F.out)}
+    ${grupo('mats', 'Matérias', MATS.map(m => [m, m]), F.mats)}
+    ${assOpts.length ? grupo('ass', 'Assuntos de ' + F.mats[0], assOpts, F.ass) : '<p class="mut xs" style="margin-top:8px">Marque uma única matéria para filtrar por assunto.</p>'}
+    ${grupo('sims', 'Simulados', SIMS.map(s => [s.id, s.nome.replace('Estratégia · ', '')]), F.sims)}
+    <label class="f" for="b-basis">Resposta considerada</label><select id="b-basis"><option value="last" ${F.basis === 'last' ? 'selected' : ''}>A mais recente de cada item</option><option value="first" ${F.basis === 'first' ? 'selected' : ''}>A primeira tentativa</option></select>
+    <div class="row" style="margin-top:12px"><button class="btn ghost" id="b-clear">Limpar filtros</button></div>
+  </details>
+  <h2>${lista.length} item(ns)</h2>
+  ${lista.length ? `<div class="row" style="margin-bottom:12px"><button class="btn pri" id="b-study">Estudar (gabarito e comentários)</button><button class="btn" id="b-item">Refazer · comentário a cada item</button><button class="btn" id="b-final">Refazer · gabarito no final</button></div>
+  <div class="card">${lista.slice(0, lim).map((q, i) => { const s = st(q.id); return `<div class="li" data-i="${i}" style="cursor:pointer"><div class="x"><div class="xs mut">${esc(q.materia)} · ${esc(assuntoLabel(q))} · item ${q.n} · ${esc(simNome(q.sim).replace('Estratégia · ', ''))}</div>
+  <div class="row" style="gap:6px;margin:4px 0">${badge(q)}${s.rev ? '<span class="tag warn">revisão</span>' : ''}${s.a1 || s.a2 ? '<span class="tag">anotação</span>' : ''}</div>
+  <div class="sm">${esc(trecho(q.enunciado))}</div></div><span class="mut">›</span></div>`; }).join('')}
+  ${lista.length > lim ? `<div class="row" style="margin-top:10px"><button class="btn" id="b-more">Mostrar mais (${lista.length - lim})</button></div>` : ''}</div>` : '<div class="card empty">Nenhum item com esses filtros.</div>'}`;
+  const save = patch => { store.setPrefs({ banco: Object.assign(BF(), patch) }); VIEW.lim = 40; vBanco(); };
+  const nome = () => { const p = []; if (F.res.length) p.push(F.res.map(k => FILTROS.res.find(x => x[0] === k)[1]).join('/')); if (F.cert.length) p.push('certeza ' + F.cert.join('/')); if (F.mats.length === 1) p.push(F.mats[0]); else if (F.mats.length) p.push(F.mats.length + ' matérias'); if (F.out.includes('rev')) p.push('revisão'); return p.join(' · ') || 'Banco de questões'; };
+  app().onchange = e => { if (e.target.id === 'b-basis') save({ basis: e.target.value }); };
+  const det = $('#b-filt'); if (det) det.ontoggle = () => { VIEW.fopen = det.open; };
+  app().onclick = e => {
+    const c = e.target.closest('.chip');
+    if (c) { const g = c.parentElement.dataset.g, cur = BF()[g].slice(), k = c.dataset.x; const i = cur.indexOf(k); i >= 0 ? cur.splice(i, 1) : cur.push(k); const patch = { [g]: cur }; if (g === 'mats') patch.ass = []; return save(patch); }
+    const id = e.target.closest('button')?.id;
+    if (id === 'b-clear') return save({ sims: [], mats: [], ass: [], res: [], cert: [], out: [] });
+    if (id === 'b-more') { VIEW.lim = lim + 60; return vBanco(); }
+    if (id === 'b-study') return estudar(lista.map(q => q.id), 0, F.basis);
+    if (id === 'b-item' || id === 'b-final') return startRun(novaSes(id === 'b-item' ? 'item' : 'final', nome(), lista.map(q => q.id), {}));
+    const row = e.target.closest('[data-i]'); if (row) estudar(lista.map(q => q.id), +row.dataset.i, F.basis);
+  };
+}
+// modo estudo: só leitura, mostra a sua resposta registrada, o gabarito, o comentário e as anotações
+function estudar(ids, i, basis) {
+  const resp = {}; for (const id of ids) { const a = pick(id, basis); if (a && a.r !== 'B') resp[id] = { r: a.r, c: a.c }; }
+  startRun({ id: 'estudo', tmp: true, modo: 'item', nome: 'Estudo', ord: ids, resp, status: 'fim' }, { review: true, i });
 }
 
 /* ===================== revisão ===================== */
