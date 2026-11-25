@@ -89,7 +89,7 @@ function render() {
   $('#nav').innerHTML = '';
   if (S.mode === 'firebase' && !S.user) return vLogin();
   if (!SIMS.length && !['dados', 'login'].includes(VIEW.v)) return vVazio();
-  const f = { home: vHome, setup: vSetup, run: vRun, result: vResult, perf: vPerf, mat: vMat, rev: vRev, discs: vDiscs, disc: vDisc, dados: vDados, hist: vHist }[VIEW.v] || vHome;
+  const f = { home: vHome, setup: vSetup, run: vRun, result: vResult, perf: vPerf, mat: vMat, rev: vRev, discs: vDiscs, disc: vDisc, dados: vDados, hist: vHist, rel: vRel }[VIEW.v] || vHome;
   f();
 }
 function header(title, back = 'home') {
@@ -141,6 +141,7 @@ function vHome() {
   </div>
   <h2>Acompanhar</h2>
   <div class="grid">
+    <button class="mode" data-v="rel"><span class="tag">Novo</span><b>Relatório</b><span class="mut sm">Diagnóstico por matéria, assunto e simulado: chutes, erros com convicção, evolução e projeção da nota.</span></button>
     <button class="mode" data-v="perf"><b>Desempenho</b><span class="mut sm">Por matéria e assunto, com filtro de certeza e estratégia de prova.</span></button>
     <button class="mode" data-v="rev"><b>Para revisão (${nrev})</b><span class="mut sm">Itens marcados, com as suas anotações.</span></button>
     <button class="mode" data-v="hist"><b>Histórico</b><span class="mut sm">Provas e blocos encerrados.</span></button>
@@ -600,6 +601,191 @@ function vMat() {
     if (e.target.id === 'tr-mat') start(qs.map(q => q.id), m);
     if (e.target.id === 'tr-mat-err') { const ids = qs.filter(q => { const a = pick(q.id); return a && (a.r === 'B' || !a.ok) && !anulada(q); }).map(q => q.id); if (!ids.length) return toast('Nenhum erro ou branco nessa matéria.'); start(ids, `${m} · erros e brancos`); }
   };
+}
+
+/* ===================== relatório ===================== */
+// Cada resposta cai num de quatro quadrantes, cruzando resultado e certeza:
+//   domínio = acertou com certeza 2–3 · sorte = acertou com certeza 1 · lacuna = errou com certeza 1 · engano = errou com certeza 2–3
+function quad(a) {
+  if (!a || a.r === 'B') return null;
+  const c = a.c || 0;
+  if (a.ok) return c >= 2 ? 'dom' : c === 1 ? 'sorte' : 'acNs';
+  return c >= 2 ? 'eng' : c === 1 ? 'lac' : 'erNs';
+}
+function qstats(ids, basis = 'last') {
+  const r = { resp: 0, c: 0, e: 0, dom: 0, sorte: 0, eng: 0, lac: 0, ns: 0, ids: { sorte: [], eng: [], lac: [] } };
+  for (const id of ids) {
+    const q = Q[id]; if (!q || anulada(q)) continue;
+    const a = pick(id, basis), k = quad(a); if (!k) continue;
+    r.resp++; a.ok ? r.c++ : r.e++;
+    if (k === 'acNs' || k === 'erNs') r.ns++; else { r[k]++; if (r.ids[k]) r.ids[k].push(id); }
+  }
+  r.liq = r.c - r.e; r.ac = pct(r.c, r.resp);
+  r.marc = r.resp - r.ns;                       // respostas com certeza marcada
+  r.pEng = pct(r.eng, r.resp);
+  r.firme = pct(r.dom, r.resp);                 // acertos com convicção sobre o total respondido
+  return r;
+}
+const pctTxt = v => v == null ? '—' : v + '%';
+function itensDe(filtro) { return Object.values(Q).filter(filtro).map(q => q.id); }
+// Prioridade de um assunto: quanto ele pesa na prova × quanto do seu desempenho nele é frágil
+function prioridade(st, materia) {
+  if (st.resp < 2) return 0;
+  const peso = (ITENS_EDITAL[materia] || 5) / ((TAX[materia] || []).length || 1);
+  const fragil = (2 * st.eng + 1 * st.lac + 0.7 * st.sorte + 0.8 * (st.e - st.eng - st.lac)) / st.resp;
+  return peso * fragil * Math.min(1, st.resp / 4);
+}
+function porSimulado(ids) { // desempenho na 1ª tentativa de cada item, agrupado por simulado (ordem cronológica)
+  return SIMS.map(s => Object.assign({ sim: s }, qstats(ids.filter(id => Q[id].sim === s.id), 'first'))).filter(x => x.resp >= 3);
+}
+function frasesMateria(m, st, evo, assuntos) {
+  const f = [];
+  if (!st.resp) return ['Ainda não há respostas nesta matéria.'];
+  const base = `${st.resp} itens respondidos, ${st.ac}% de acerto, líquido ${sgn(st.liq)}.`;
+  f.push(base);
+  if (st.marc < st.resp * 0.6) f.push(`Em ${st.ns} respostas você não marcou o nível de certeza; a leitura abaixo fica menos precisa.`);
+  if (st.c && st.sorte / st.c >= 0.3) f.push(`<b>Acerto apoiado em chute:</b> ${st.sorte} dos ${st.c} acertos foram com certeza 1. Esse acerto pode não se repetir na prova — vale revisar mesmo os itens que você acertou.`);
+  else if (st.c >= 4 && st.dom / st.c >= 0.75) f.push(`<b>Acerto consistente:</b> ${st.dom} dos ${st.c} acertos foram com certeza 2 ou 3.`);
+  if (st.eng >= 2 || (st.resp >= 8 && st.eng / st.resp >= 0.12)) f.push(`<b>Erros com convicção:</b> ${st.eng} item(ns) errado(s) com certeza 2 ou 3. É o sinal de conceito aprendido errado — prioridade máxima, porque na prova você marcaria com segurança e perderia ponto.`);
+  if (st.lac >= 2) f.push(`<b>Lacunas conhecidas:</b> ${st.lac} erro(s) com certeza 1 — pontos que você já sabia que não dominava.`);
+  const comCerteza1 = st.sorte + st.lac;
+  if (comCerteza1 >= 4) f.push(st.sorte - st.lac > 0 ? `Nos itens de certeza 1, chutar está compensando (saldo ${sgn(st.sorte - st.lac)}).` : `Nos itens de certeza 1, chutar está custando pontos (saldo ${sgn(st.sorte - st.lac)}): na prova, deixar em branco renderia mais nesta matéria.`);
+  if (evo.length >= 2) {
+    const a = evo[0], b = evo[evo.length - 1], d = (b.ac ?? 0) - (a.ac ?? 0);
+    f.push(`<b>Evolução</b> (1ª tentativa de cada item): ${evo.map(x => `${x.sim.nome.replace('Estratégia · ', '')} ${pctTxt(x.ac)}`).join(' → ')}. ${Math.abs(d) < 8 ? 'Estável.' : d > 0 ? `Melhora de ${d} pontos percentuais.` : `Queda de ${-d} pontos percentuais — vale entender o que mudou.`}`);
+    const pior = [...evo].sort((x, y) => (x.ac ?? 0) - (y.ac ?? 0))[0];
+    if (evo.length >= 3 && pior !== a && pior !== b) f.push(`O pior desempenho foi na ${pior.sim.nome.replace('Estratégia · ', '')} (${pctTxt(pior.ac)}).`);
+  }
+  const fracos = assuntos.filter(x => x.st.resp >= 2).sort((x, y) => y.pri - x.pri).slice(0, 3).filter(x => x.pri > 0.15);
+  const fortes = assuntos.filter(x => x.st.resp >= 3 && x.st.ac >= 80 && x.st.sorte <= x.st.c * 0.25);
+  if (fracos.length) f.push(`<b>Revisar primeiro:</b> ${fracos.map(x => `${esc(x.label)} (${x.motivo})`).join('; ')}.`);
+  if (fortes.length) f.push(`<b>Pontos fortes:</b> ${fortes.map(x => esc(x.label)).join(', ')}.`);
+  return f;
+}
+function motivo(st) {
+  const m = [];
+  if (st.eng) m.push(`${st.eng} erro${st.eng > 1 ? 's' : ''} com convicção`);
+  if (st.sorte) m.push(`${st.sorte} acerto${st.sorte > 1 ? 's' : ''} no chute`);
+  if (st.lac) m.push(`${st.lac} lacuna${st.lac > 1 ? 's' : ''}`);
+  if (!m.length) m.push(`${st.ac}% de acerto`);
+  return m.join(', ');
+}
+function assuntosDe(m, ids) {
+  return (TAX[m] || []).map(([c, l]) => {
+    const g = ids.filter(id => assuntoCod(Q[id]) === c), st = qstats(g);
+    return { cod: c, label: l, ids: g, st, pri: prioridade(st, m), motivo: motivo(st) };
+  }).filter(x => x.ids.length);
+}
+function quadBar(st) {
+  const t = st.resp || 1;
+  return `<div class="bar" title="domínio / sorte / lacuna / engano">${[['dom', 'var(--acc2)'], ['sorte', '#f5b971'], ['lac', '#b9cfc8'], ['eng', 'var(--bad)'], ['ns', 'var(--line)']].map(([k, c]) => `<i style="width:${100 * (st[k] || 0) / t}%;background:${c}"></i>`).join('')}</div>`;
+}
+const LEG_QUAD = `<div class="legend"><span><i style="background:var(--acc2)"></i>domínio (acertou com certeza 2–3)</span><span><i style="background:#f5b971"></i>sorte (acertou com certeza 1)</span><span><i style="background:#b9cfc8"></i>lacuna (errou com certeza 1)</span><span><i style="background:var(--bad)"></i>engano (errou com certeza 2–3)</span></div>`;
+function projecao() {
+  // líquido médio por item em cada matéria × nº de itens da matéria na prova
+  const linhas = [...P1, ...P2].map(m => {
+    const st = qstats(itensDe(q => q.materia === m));
+    const n = ITENS_EDITAL[m] || 0;
+    const r1 = st.resp ? st.liq / st.resp : null;
+    const r2 = st.resp ? ((st.c - st.sorte) - (st.e - st.lac)) / st.resp : null; // deixando em branco os de certeza 1
+    return { m, n, st, p1: r1 == null ? null : r1 * n, p2: r2 == null ? null : r2 * n, bloco: P1.includes(m) ? 'P1' : 'P2' };
+  });
+  const soma = (b, k) => linhas.filter(l => (!b || l.bloco === b) && l[k] != null).reduce((t, l) => t + l[k], 0);
+  const cobertas = linhas.filter(l => l.st.resp >= 5).length;
+  return { linhas, cobertas, P1: soma('P1', 'p1'), P2: soma('P2', 'p1'), T: soma(null, 'p1'), P1b: soma('P1', 'p2'), P2b: soma('P2', 'p2'), Tb: soma(null, 'p2') };
+}
+function vRel() {
+  const tab = VIEW.tab || 'geral';
+  const tabs = [['geral', 'Geral'], ['mat', 'Por matéria'], ['sim', 'Por simulado']];
+  let body = '';
+  if (tab === 'geral') body = relGeral();
+  if (tab === 'mat') body = relMateria();
+  if (tab === 'sim') body = relSimulado();
+  app().innerHTML = header('Relatório') + `<p class="mut sm">Gerado com as suas respostas até agora e atualizado a cada item corrigido. "Atual" usa a resposta mais recente de cada item; "evolução" usa a primeira tentativa, simulado a simulado.</p>
+  <div class="chips" style="margin:10px 0 4px">${tabs.map(([k, l]) => `<button class="chip" aria-pressed="${tab === k}" data-tab="${k}">${l}</button>`).join('')}</div>${body}`;
+  app().onclick = e => {
+    const b = e.target.closest('button,[data-mat],[data-train]'); if (!b) return;
+    if (b.dataset.tab) return go('rel', { tab: b.dataset.tab });
+    if (b.dataset.mat) return go('rel', { tab: 'mat', mat: b.dataset.mat });
+    if (b.dataset.simr) return go('rel', { tab: 'sim', sim: b.dataset.simr });
+    if (b.dataset.train) { const ids = b.dataset.train.split(','); startRun(novaSes('item', b.dataset.nome || 'Revisão do relatório', ids, {})); }
+  };
+}
+function relGeral() {
+  const all = Object.keys(Q), st = qstats(all), pj = projecao();
+  if (!st.resp) return '<div class="card empty">Resolva alguns itens para gerar o relatório.</div>';
+  const cut = (v, min) => `<b class="${v >= min ? 'pos' : 'neg'}">${v >= 0 ? '+' : ''}${v.toFixed(0)}</b> <span class="xs mut">(mín. ${min})</span>`;
+  const lv = agg(all).nivel, acc = l => lv[l][0] ? pct(lv[l][1], lv[l][0]) : null;
+  const cal = [];
+  if (acc(1) != null && lv[1][0] >= 5) cal.push(acc(1) < 50 ? `Com certeza 1 você acerta ${acc(1)}% — abaixo de 50%, chutar tira pontos. <b>Na prova, deixe em branco os itens de certeza 1.</b>` : `Com certeza 1 você acerta ${acc(1)}% — acima de 50%, o chute ainda compensa, mas por pouca margem.`);
+  if (acc(3) != null && lv[3][0] >= 5) cal.push(acc(3) >= 85 ? `Com certeza 3 você acerta ${acc(3)}% — sua convicção é confiável.` : `Com certeza 3 você acerta só ${acc(3)}% — há excesso de confiança; os erros com convicção estão listados abaixo.`);
+  if (acc(2) != null && lv[2][0] >= 5) cal.push(`Com certeza 2: ${acc(2)}% de acerto.`);
+  const ass = MATS.flatMap(m => assuntosDe(m, itensDe(q => q.materia === m)).map(x => Object.assign(x, { m }))).filter(x => x.pri > 0).sort((a, b) => b.pri - a.pri).slice(0, 8);
+  const mats = MATS.map(m => { const ids = itensDe(q => q.materia === m), s = qstats(ids); const pri = assuntosDe(m, ids).reduce((t, x) => t + x.pri, 0); return { m, s, pri }; }).filter(x => x.s.resp).sort((a, b) => b.pri - a.pri);
+  const provas = Object.values(S.ses).filter(s => s.status === 'fim' && s.modo === 'prova').sort((a, b) => b.fim - a.fim);
+  const ult = provas[0] && sesScore(provas[0]);
+  const aprov = pj.P1 >= CORTE.P1 && pj.P2 >= CORTE.P2 && pj.T >= CORTE.TOTAL;
+  return `
+  <h2>Se a prova fosse hoje</h2>
+  <div class="card gap">
+    <p>${pj.cobertas < 10 ? `<span class="tag warn">projeção ainda fraca</span> Só ${pj.cobertas} das 16 matérias têm 5 ou mais itens respondidos. ` : ''}Projeção pelo seu líquido médio por item em cada matéria, multiplicado pelo número de itens da matéria na prova:</p>
+    <div class="scroll"><table class="t"><thead><tr><th></th><th>Respondendo tudo</th><th>Em branco nos de certeza 1</th></tr></thead><tbody>
+      <tr><td>P1 · Básicos (60)</td><td>${cut(pj.P1, CORTE.P1)}</td><td>${cut(pj.P1b, CORTE.P1)}</td></tr>
+      <tr><td>P2 · Específicos (100)</td><td>${cut(pj.P2, CORTE.P2)}</td><td>${cut(pj.P2b, CORTE.P2)}</td></tr>
+      <tr><td><b>Total (160)</b></td><td>${cut(pj.T, CORTE.TOTAL)}</td><td>${cut(pj.Tb, CORTE.TOTAL)}</td></tr></tbody></table></div>
+    <p class="sm">${aprov ? 'Pela projeção, você passaria dos <b>mínimos de eliminação</b> do edital.' : 'Pela projeção, você ainda ficaria <b>abaixo de algum mínimo</b> de eliminação do edital.'} ${pj.Tb > pj.T + 1 ? `Deixar em branco os itens de certeza 1 renderia <b>${(pj.Tb - pj.T).toFixed(0)} pontos a mais</b>.` : ''}</p>
+    <p class="mut xs">Os mínimos (12 / 30 / 48) só evitam a eliminação. A classificação depende da nota dos demais candidatos (375 vagas na correção da discursiva para a ampla concorrência), que não temos como estimar daqui.</p>
+    ${ult ? `<p class="sm">Última prova cronometrada (${esc(provas[0].nome)}): líquido <b>${sgn(ult.liq)}</b> — P1 ${sgn(ult.by.P1.c - ult.by.P1.e)}, P2 ${sgn(ult.by.P2.c - ult.by.P2.e)}.</p>` : ''}
+  </div>
+  <h2>Sua certeza é confiável?</h2>
+  <div class="card">${cal.length ? cal.map(x => `<p>${x}</p>`).join('') : '<p class="mut">Marque a certeza em mais itens para esta análise (mínimo de 5 por nível).</p>'}</div>
+  <h2>Onde investir agora</h2>
+  ${ass.length ? `<div class="card">${ass.map((x, i) => `<div class="li"><div class="x"><div class="xs mut">${esc(x.m)}</div><b>${i + 1}. ${esc(x.label)}</b><div class="sm">${x.motivo} · ${x.st.resp} itens · ${x.st.ac}% de acerto</div>${quadBar(x.st)}</div><button class="btn" data-train="${x.ids.join(',')}" data-nome="${esc(x.m + ' · ' + x.label)}">Treinar</button></div>`).join('')}${LEG_QUAD}
+  <p class="mut xs" style="margin-top:6px">Prioridade = peso do assunto na prova × fragilidade (erros com convicção valem mais que lacunas; acertos no chute também entram).</p></div>` : '<div class="card empty">Nenhum assunto com fragilidade relevante ainda.</div>'}
+  ${st.ids.eng.length ? `<div class="row" style="margin-top:12px"><button class="btn pri" data-train="${st.ids.eng.join(',')}" data-nome="Erros com convicção">Treinar os ${st.ids.eng.length} erros com convicção</button>${st.ids.sorte.length ? `<button class="btn" data-train="${st.ids.sorte.join(',')}" data-nome="Acertos no chute">Rever os ${st.ids.sorte.length} acertos no chute</button>` : ''}</div>` : ''}
+  <h2>Matérias, da mais frágil para a mais sólida</h2>
+  <div class="card">${mats.map(x => `<div class="li" data-mat="${esc(x.m)}" style="cursor:pointer"><div class="x"><b>${esc(x.m)}</b><div class="sm">${x.s.resp} resp. · ${x.s.ac}% · líquido ${sgn(x.s.liq)}${x.s.sorte ? ` · ${x.s.sorte} no chute` : ''}${x.s.eng ? ` · ${x.s.eng} com convicção errada` : ''}</div>${quadBar(x.s)}</div><span class="mut">›</span></div>`).join('')}${LEG_QUAD}</div>`;
+}
+function relMateria() {
+  const m = VIEW.mat || (MATS.find(x => qstats(itensDe(q => q.materia === x)).resp) || MATS[0]);
+  const ids = itensDe(q => q.materia === m), st = qstats(ids), evo = porSimulado(ids), ass = assuntosDe(m, ids);
+  const frases = frasesMateria(m, st, evo, ass);
+  return `<div class="chips" style="margin:6px 0">${MATS.map(x => `<button class="chip" aria-pressed="${x === m}" data-mat="${esc(x)}">${esc(x)}</button>`).join('')}</div>
+  <h2>${esc(m)}</h2><p class="mut sm">${ITENS_EDITAL[m] || '?'} itens na prova · ${ids.length} itens nos simulados</p>
+  <div class="card">${frases.map(x => `<p>${x}</p>`).join('')}${st.resp ? quadBar(st) + LEG_QUAD : ''}</div>
+  ${evo.length ? `<h2>Evolução por simulado</h2><div class="card scroll"><table class="t"><thead><tr><th>Simulado</th><th>Itens</th><th>Acerto</th><th>Líq.</th><th>Chute</th><th>Conv. errada</th></tr></thead><tbody>${evo.map(x => `<tr><td>${esc(x.sim.nome.replace('Estratégia · ', ''))}<div class="xs mut">${esc(x.sim.data || '')}</div></td><td>${x.resp}</td><td>${pctTxt(x.ac)}</td><td class="${x.liq < 0 ? 'neg' : ''}">${sgn(x.liq)}</td><td>${x.sorte}</td><td>${x.eng}</td></tr>`).join('')}</tbody></table><p class="mut xs" style="margin-top:6px">Primeira tentativa de cada item.</p></div>` : ''}
+  <h2>Assuntos</h2>
+  <div class="card">${ass.sort((a, b) => b.pri - a.pri).map(x => {
+    const ev = porSimulado(x.ids); const evTxt = ev.length >= 2 ? ` · ${ev.map(e => `${e.sim.nome.replace('Estratégia · ', '').replace(' Rodada', '')} ${pctTxt(e.ac)}`).join(' → ')}` : '';
+    return `<div class="li"><div class="x"><b>${esc(x.label)}</b><div class="sm">${x.st.resp ? `${x.st.resp} resp. · ${x.st.ac}% · ${x.motivo}${evTxt}` : `${x.ids.length} itens, nenhum respondido`}</div>${x.st.resp ? quadBar(x.st) : ''}</div>${x.ids.length ? `<button class="btn" data-train="${x.ids.join(',')}" data-nome="${esc(m + ' · ' + x.label)}">Treinar</button>` : ''}</div>`;
+  }).join('')}</div>
+  ${(st.ids.eng.length || st.ids.sorte.length) ? `<div class="row" style="margin-top:12px">${st.ids.eng.length ? `<button class="btn pri" data-train="${st.ids.eng.join(',')}" data-nome="${esc(m)} · erros com convicção">Erros com convicção (${st.ids.eng.length})</button>` : ''}${st.ids.sorte.length ? `<button class="btn" data-train="${st.ids.sorte.join(',')}" data-nome="${esc(m)} · acertos no chute">Acertos no chute (${st.ids.sorte.length})</button>` : ''}</div>` : ''}`;
+}
+function relSimulado() {
+  const done = SIMS.filter(s => qstats(s.questoes.map(q => q.id), 'first').resp);
+  const sid = VIEW.sim || (done[done.length - 1] || SIMS[0]).id, sim = simById(sid);
+  const ids = sim.questoes.map(q => q.id), st = qstats(ids, 'first');
+  const idx = done.findIndex(s => s.id === sid), ant = idx > 0 ? done[idx - 1] : null;
+  const rows = MATS.map(m => { const g = ids.filter(id => Q[id].materia === m); const s1 = qstats(g, 'first'); const s0 = ant ? qstats(ant.questoes.filter(q => q.materia === m).map(q => q.id), 'first') : null; return { m, n: g.length, s1, s0 }; }).filter(x => x.n);
+  const resp = rows.filter(x => x.s1.resp);
+  const melhor = [...resp].sort((a, b) => (b.s1.ac ?? 0) - (a.s1.ac ?? 0))[0], pior = [...resp].sort((a, b) => (a.s1.ac ?? 0) - (b.s1.ac ?? 0))[0];
+  const P = b => { const g = ids.filter(id => bloco(Q[id]) === b); const s = qstats(g, 'first'); return s; };
+  const p1 = P('P1'), p2 = P('P2');
+  const frases = [];
+  if (!st.resp) frases.push('Nenhum item deste simulado respondido ainda.');
+  else {
+    frases.push(`${st.resp} de ${ids.length} itens respondidos (1ª tentativa): ${st.ac}% de acerto, líquido ${sgn(st.liq)}.`);
+    if (st.resp >= 150) frases.push(`P1 ${sgn(p1.liq)} (mínimo ${CORTE.P1}) e P2 ${sgn(p2.liq)} (mínimo ${CORTE.P2}). ${p1.liq >= CORTE.P1 && p2.liq >= CORTE.P2 && st.liq >= CORTE.TOTAL ? 'Acima dos mínimos de eliminação.' : 'Abaixo de algum mínimo de eliminação.'}`);
+    if (melhor && pior && melhor !== pior) frases.push(`Melhor matéria: <b>${esc(melhor.m)}</b> (${pctTxt(melhor.s1.ac)}). Pior: <b>${esc(pior.m)}</b> (${pctTxt(pior.s1.ac)}).`);
+    if (st.sorte >= 3) frases.push(`${st.sorte} acertos foram no chute (certeza 1)${st.c ? `, ${pct(st.sorte, st.c)}% dos acertos` : ''}.`);
+    if (st.eng >= 2) frases.push(`${st.eng} erros com convicção — os mais importantes de revisar deste simulado.`);
+    if (ant) { const s0 = qstats(ant.questoes.map(q => q.id), 'first'); const d = (st.ac ?? 0) - (s0.ac ?? 0); frases.push(`Em relação à ${esc(ant.nome.replace('Estratégia · ', ''))} (${pctTxt(s0.ac)}): ${Math.abs(d) < 5 ? 'desempenho parecido' : d > 0 ? `melhora de ${d} pontos` : `queda de ${-d} pontos`}.`); }
+  }
+  return `<div class="chips" style="margin:6px 0">${SIMS.map(s => `<button class="chip" aria-pressed="${s.id === sid}" data-simr="${esc(s.id)}">${esc(s.nome.replace('Estratégia · ', ''))}</button>`).join('')}</div>
+  <h2>${esc(sim.nome)} <span class="mut sm">${esc(sim.data || '')}</span></h2>
+  <div class="card">${frases.map(x => `<p>${x}</p>`).join('')}${st.resp ? quadBar(st) + LEG_QUAD : ''}</div>
+  ${resp.length ? `<h2>Por matéria</h2><div class="card scroll"><table class="t"><thead><tr><th>Matéria</th><th>Resp.</th><th>Acerto</th><th>Líq.</th><th>Chute</th><th>Conv. err.</th>${ant ? '<th class="hide-sm">Antes</th>' : ''}</tr></thead><tbody>${resp.sort((a, b) => (a.s1.ac ?? 0) - (b.s1.ac ?? 0)).map(x => `<tr data-mat="${esc(x.m)}" style="cursor:pointer"><td>${esc(x.m)}</td><td>${x.s1.resp}/${x.n}</td><td>${pctTxt(x.s1.ac)}</td><td class="${x.s1.liq < 0 ? 'neg' : ''}">${sgn(x.s1.liq)}</td><td>${x.s1.sorte}</td><td>${x.s1.eng}</td>${ant ? `<td class="hide-sm">${pctTxt(x.s0 && x.s0.ac)}</td>` : ''}</tr>`).join('')}</tbody></table>${ant ? `<p class="mut xs" style="margin-top:6px">"Antes" = mesma matéria na ${esc(ant.nome.replace('Estratégia · ', ''))}.</p>` : ''}</div>` : ''}
+  ${st.ids.eng.length ? `<div class="row" style="margin-top:12px"><button class="btn pri" data-train="${st.ids.eng.join(',')}" data-nome="${esc(sim.nome)} · erros com convicção">Revisar erros com convicção (${st.ids.eng.length})</button></div>` : ''}`;
 }
 
 /* ===================== revisão ===================== */
