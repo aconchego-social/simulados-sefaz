@@ -241,7 +241,7 @@ function novaSes(modo, nome, ord, extra) {
 /* ===================== resolução ===================== */
 function startRun(s, opts = {}) {
   clearInterval(tick);
-  R = { ses: s, list: opts.list || s.ord, i: opts.i ?? (opts.review ? 0 : s.cur || 0), t0: now(), review: !!opts.review, nota: false, back: opts.back, done: {} };
+  R = { ses: s, list: opts.list || s.ord, i: opts.i ?? (opts.review ? 0 : s.cur || 0), t0: now(), review: !!opts.review, nota: false, back: opts.back, done: {}, showNotes: {} };
   if (!R.review) syncExt(s);
   VIEW = { v: 'run' }; tick = setInterval(onTick, 1000); scrollTo(0, 0); render();
 }
@@ -269,7 +269,7 @@ function syncExt(s) {
   if (s.modo === 'prova') return;
   for (const qid of s.ord) {
     const own = s.resp[qid];
-    if (own && own.r && !own.ext) continue;
+    if (own && (own.redo || (own.r && !own.ext))) continue;
     const p = st(qid).p, h = hist(qid);
     const last = [...h].reverse().find(x => x.ses && x.ses !== s.id && x.t >= (s.ini || 0) && x.r !== 'B');
     if (p && p.r && p.ses !== s.id && S.ses[p.ses] && S.ses[p.ses].status === 'andamento') s.resp[qid] = { r: p.r, c: p.c || 0, ext: 'pend' };
@@ -330,6 +330,8 @@ function vRun() {
   const s = R.ses, qid = R.list[R.i], q = Q[qid];
   if (!q) { toast('Item não encontrado no banco.'); return go('home'); }
   const S1 = st(qid), r = s.resp[qid] || {}, rev = revealedNow(qid), lock = rev || !!r.ext;
+  // anotações feitas em outro treino ficam ocultas até a correção (ou até você pedir para ver)
+  const notasOcultas = !R.review && !rev && !R.showNotes[qid] && !R.nota && !(r.r && !r.ext) && !!(S1.a1 || S1.a2);
   const feitos = Object.values(s.resp).filter(x => x.r).length;
   const modo = MODOS[s.modo];
   const cls = v => {
@@ -364,14 +366,16 @@ function vRun() {
     <button data-a="C" ${cls('C')} ${lock ? 'disabled' : ''}>Certo</button>
     <button data-a="E" ${cls('E')} ${lock ? 'disabled' : ''}>Errado</button>
   </div>
-  ${r.ext && !R.review ? `<div class="nota">${r.ext === 'pend' ? 'Você já respondeu este item em outro treino com gabarito no final. Ele conta uma vez só e será corrigido lá.' : 'Você já respondeu e corrigiu este item em outro treino. Ele não será contado de novo.'}</div>` : ''}
+  ${r.ext && !R.review ? `<div class="nota">${r.ext === 'pend' ? 'Você já respondeu este item em outro treino com gabarito no final. Ele conta uma vez só e será corrigido lá.' : `Você já respondeu e corrigiu este item em outro treino. Ele não será contado de novo.<div class="row" style="margin-top:8px"><button class="btn" id="redo">Refazer aqui</button><span class="xs mut sp">Ao refazer, vale a resposta mais recente: o item continua contando uma vez só no desempenho.</span></div>`}</div>` : ''}
   ${rev && !R.review ? '' : `<div class="conf"><div class="sm" style="font-weight:800">Quão seguro você está?</div><div class="opts">${[1, 2, 3].map(n => `<button data-c="${n}" aria-pressed="${r.c === n}" ${lock ? 'disabled' : ''}>${n}<small>${CONF[n]}</small></button>`).join('')}</div></div>`}
   <div class="tools">
-    <button id="t-nota" aria-pressed="${!!(R.nota || S1.a1)}">${ICON.pen}Anotar</button>
+    <button id="t-nota" aria-pressed="${!!(R.nota || (S1.a1 && !notasOcultas))}">${ICON.pen}Anotar</button>
     <button id="t-rev" aria-pressed="${!!S1.rev}">${ICON.flag}${S1.rev ? 'Em revisão' : 'Revisar'}</button>
     ${!lock && r.r ? `<button id="t-clear">Limpar</button>` : ''}
   </div>
-  ${(R.nota || S1.a1) ? `<label class="f" for="a1">Minha anotação durante a resolução</label><textarea id="a1" placeholder="Raciocínio, dúvida, palavra-chave…">${esc(S1.a1 || '')}</textarea>` : ''}
+  ${notasOcultas ? `<div class="nota row"><span class="sp sm">Você tem anotações suas deste item. Elas ficam ocultas até você corrigir.</span><button class="btn" id="shownotes">Mostrar</button></div>` : ''}
+  ${(R.nota || (S1.a1 && !notasOcultas)) ? `<label class="f" for="a1">Minha anotação durante a resolução</label><textarea id="a1" placeholder="Raciocínio, dúvida, palavra-chave…">${esc(S1.a1 || '')}</textarea>` : ''}
+  ${notasOcultas || rev || !S1.a2 || !R.showNotes[qid] ? '' : `<label class="f">Minha anotação após o comentário (de outro treino)</label><div class="note">${esc(S1.a2)}</div>`}
   ${verd}
   ${rev ? `${q.nota_revisao ? `<div class="nota">${q.nota_revisao}</div>` : ''}<div class="com"><h3>Comentário do professor</h3>${q.comentario}</div>
   <label class="f" for="a2">Minha anotação após o comentário</label><textarea id="a2" placeholder="O que faltou? Qual a pegadinha?">${esc(S1.a2 || '')}</textarea>
@@ -388,7 +392,7 @@ function vRun() {
   let nt;
   app().oninput = e => {
     if (e.target.id !== 'a1' && e.target.id !== 'a2') return;
-    const k = e.target.id, v = e.target.value; clearTimeout(nt); nt = setTimeout(() => setQ(qid, { [k]: v }), 600);
+    const k = e.target.id, v = e.target.value; R.showNotes[qid] = true; clearTimeout(nt); nt = setTimeout(() => setQ(qid, { [k]: v }), 600);
   };
   app().onclick = e => {
     const b = e.target.closest('button'); if (!b) return;
@@ -397,7 +401,9 @@ function vRun() {
     if (b.dataset.c) { const rr = s.resp[qid] || (s.resp[qid] = {}); rr.c = +b.dataset.c; saveSes(); pendente(qid, rr); return vRun(); }
     if (b.id === 't-clear') { s.resp[qid] = { s: r.s }; saveSes(); pendente(qid, {}); return vRun(); }
     if (b.id === 'corr') return corrigirSheet();
-    if (b.id === 't-nota') { R.nota = !R.nota; vRun(); const t = $('#a1'); if (t) t.focus(); return; }
+    if (b.id === 't-nota') { if (notasOcultas) R.showNotes[qid] = true; R.nota = !R.nota || notasOcultas; vRun(); const t = $('#a1'); if (t) t.focus(); return; }
+    if (b.id === 'shownotes') { R.showNotes[qid] = true; return vRun(); }
+    if (b.id === 'redo') { s.resp[qid] = { redo: true }; saveSes(); return vRun(); }
     if (b.id === 't-rev') { setQ(qid, { rev: !S1.rev }); return vRun(); }
     if (b.id === 'ass') return assuntoSheet(q);
     if (b.id === 'grid') return gridSheet();
