@@ -117,6 +117,7 @@ function vVazio() {
 function vHome() {
   const all = Object.keys(Q); const a = agg(all);
   const abertas = Object.values(S.ses).filter(s => s.status === 'andamento').sort((x, y) => (y.u || 0) - (x.u || 0));
+  for (const s of abertas) if (rebuild(s)) store.setSes(s);
   const nrev = all.filter(id => st(id).rev).length;
   app().innerHTML = `
   <div class="hdr"><span class="brand"><i class="dot"></i>Simulados SEFAZ-AL</span><span class="sp"></span>${syncPill()}</div>
@@ -244,7 +245,7 @@ function novaSes(modo, nome, ord, extra) {
 function startRun(s, opts = {}) {
   clearInterval(tick);
   R = { ses: s, list: opts.list || s.ord, i: opts.i ?? (opts.review ? 0 : s.cur || 0), t0: now(), review: !!opts.review, nota: false, back: opts.back, done: {}, showNotes: {} };
-  if (!R.review) syncExt(s);
+  if (!R.review && !s.tmp) { if (rebuild(s)) store.setSes(s); syncExt(s); }
   VIEW = { v: 'run' }; tick = setInterval(onTick, 1000); scrollTo(0, 0); render();
 }
 function bank() { // acumula tempo (só na prova cronometrada)
@@ -253,8 +254,21 @@ function bank() { // acumula tempo (só na prova cronometrada)
   const qid = R.list[R.i]; const r = R.ses.resp[qid] || (R.ses.resp[qid] = {});
   r.s = (r.s || 0) + d; R.ses.gasto = (R.ses.gasto || 0) + d;
 }
-function saveSes() { R.ses.u = now(); store.setSes(R.ses); }
-function leaveRun() { if (R && !R.review) { bank(); R.ses.cur = R.i; saveSes(); } clearInterval(tick); R = null; }
+function saveSes(qids = []) { R.ses.u = now(); for (const q of qids) { const r = R.ses.resp[q]; if (r) r.t = now(); } store.patchSes(R.ses, qids); }
+// Reconstrói as respostas da sessão a partir do que ficou guardado item a item (histórico e respostas pendentes).
+function rebuild(s) {
+  let n = 0;
+  for (const qid of s.ord || []) {
+    if (!Q[qid]) continue; const own = s.resp[qid];
+    if (own && (own.r || own.redo)) continue;
+    const h = [...hist(qid)].reverse().find(x => x.ses === s.id && x.r !== 'B');
+    const p = st(qid).p;
+    if (h) { s.resp[qid] = { r: h.r, c: h.c || 0, conf: true, t: h.t }; n++; }
+    else if (p && p.ses === s.id && p.r) { s.resp[qid] = { r: p.r, c: p.c || 0, t: p.t }; n++; }
+  }
+  return n;
+}
+function leaveRun() { if (R && !R.review && !R.ses.tmp) { bank(); R.ses.cur = R.i; saveSes(R.ses.modo === 'prova' ? [R.list[R.i]] : []); } clearInterval(tick); R = null; }
 function onTick() {
   if (!R || R.review || R.ses.modo !== 'prova') return;
   const el = $('#timer'); if (!el) return;
@@ -262,7 +276,7 @@ function onTick() {
   el.lastChild.textContent = fmtT(left); el.classList.toggle('low', left < 900);
   if (left <= 0) { bank(); encerrar(true); }
 }
-function move(i) { if (!R || i < 0 || i >= R.list.length) return; bank(); R.i = i; R.nota = false; if (!R.review) syncExt(R.ses); if (!R.review) { R.ses.cur = i; saveSes(); } scrollTo(0, 0); vRun(); }
+function move(i) { if (!R || i < 0 || i >= R.list.length) return; const prev = R.list[R.i]; bank(); R.i = i; R.nota = false; if (!R.review) syncExt(R.ses); if (!R.review) { R.ses.cur = i; saveSes(R.ses.modo === 'prova' ? [prev] : []); } scrollTo(0, 0); vRun(); }
 const revealedNow = qid => R.review || (R.ses.modo !== 'prova' && (R.ses.resp[qid] || {}).conf === true);
 
 /* Itens respondidos em OUTRO treino livre depois que este começou aparecem aqui como já respondidos,
@@ -292,7 +306,7 @@ function corrigir(qids) { // registra no histórico e libera gabarito/comentári
     const h = hist(qid).slice(); h.push({ t: now(), r: r.r, ok: r.r === q.gabarito, c: r.c || 0, m: s.modo, ses: s.id, anul: anulada(q) || undefined });
     setQ(qid, { h, p: null });
   }
-  saveSes(); return feitos;
+  saveSes(feitos); return feitos;
 }
 function abertosDe(filtro) { return R.ses.ord.filter(id => { const r = R.ses.resp[id]; return r && r.r && !r.conf && !r.ext && Q[id] && filtro(Q[id]); }); }
 function corrigirSheet(motivo, materia) {
@@ -399,13 +413,13 @@ function vRun() {
   app().onclick = e => {
     const b = e.target.closest('button'); if (!b) return;
     if (b.dataset.i) return move(+b.dataset.i);
-    if (b.dataset.a) { const rr = s.resp[qid] || (s.resp[qid] = {}); rr.r = rr.r === b.dataset.a && s.modo !== 'item' ? null : b.dataset.a; saveSes(); pendente(qid, rr); return vRun(); }
-    if (b.dataset.c) { const rr = s.resp[qid] || (s.resp[qid] = {}); rr.c = +b.dataset.c; saveSes(); pendente(qid, rr); return vRun(); }
-    if (b.id === 't-clear') { s.resp[qid] = { s: r.s }; saveSes(); pendente(qid, {}); return vRun(); }
+    if (b.dataset.a) { const rr = s.resp[qid] || (s.resp[qid] = {}); rr.r = rr.r === b.dataset.a && s.modo !== 'item' ? null : b.dataset.a; saveSes([qid]); pendente(qid, rr); return vRun(); }
+    if (b.dataset.c) { const rr = s.resp[qid] || (s.resp[qid] = {}); rr.c = +b.dataset.c; saveSes([qid]); pendente(qid, rr); return vRun(); }
+    if (b.id === 't-clear') { s.resp[qid] = { s: r.s }; saveSes([qid]); pendente(qid, {}); return vRun(); }
     if (b.id === 'corr') return corrigirSheet();
     if (b.id === 't-nota') { if (notasOcultas) R.showNotes[qid] = true; R.nota = !R.nota || notasOcultas; vRun(); const t = $('#a1'); if (t) t.focus(); return; }
     if (b.id === 'shownotes') { R.showNotes[qid] = true; return vRun(); }
-    if (b.id === 'redo') { s.resp[qid] = { redo: true }; saveSes(); return vRun(); }
+    if (b.id === 'redo') { s.resp[qid] = { redo: true }; saveSes([qid]); return vRun(); }
     if (b.id === 't-rev') { setQ(qid, { rev: !S1.rev }); return vRun(); }
     if (b.id === 'ass') return assuntoSheet(q);
     if (b.id === 'grid') return gridSheet();
@@ -433,12 +447,12 @@ function vRun() {
 }
 function confirmarItem(qid) {
   const s = R.ses, r = s.resp[qid], q = Q[qid];
-  r.conf = true; saveSes();
+  r.conf = true; saveSes([qid]);
   const h = hist(qid).slice(); h.push({ t: now(), r: r.r, ok: r.r === q.gabarito, c: r.c || 0, m: 'item', ses: s.id, anul: anulada(q) || undefined });
   setQ(qid, { h, p: null }); vRun();
 }
 function encerrar(timeout) {
-  const s = R.ses; bank(); clearInterval(tick);
+  const s = R.ses; bank(); clearInterval(tick); rebuild(s);
   s.status = 'fim'; s.fim = now(); s.timeout = !!timeout;
   if (s.modo !== 'item') {
     for (const qid of s.ord) {
@@ -474,7 +488,7 @@ document.addEventListener('keydown', e => {
   else if (k === 'c') click('[data-a=C]'); else if (k === 'e') click('[data-a=E]');
   else if ('123'.includes(k)) click(`[data-c="${k}"]`); else if (k === 'enter') click('#confirm, #next');
 });
-document.addEventListener('visibilitychange', () => { if (!R) return; if (document.hidden) { bank(); if (!R.review) { R.ses.cur = R.i; saveSes(); } } else R.t0 = now(); });
+document.addEventListener('visibilitychange', () => { if (!R) return; if (document.hidden) { bank(); if (!R.review && !R.ses.tmp) { R.ses.cur = R.i; saveSes(R.ses.modo === 'prova' ? [R.list[R.i]] : []); } } else R.t0 = now(); });
 
 /* ===================== resultado ===================== */
 function confTable(lv) {

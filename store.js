@@ -14,6 +14,20 @@ function idb() {
 async function kvGet(k) { const db = await idb(); return new Promise(r => { const t = db.transaction('kv').objectStore('kv').get(k); t.onsuccess = () => r(t.result); t.onerror = () => r(undefined); }); }
 async function kvSet(k, v) { const db = await idb(); return new Promise(r => { const t = db.transaction('kv', 'readwrite'); t.objectStore('kv').put(v, k); t.oncomplete = () => r(); t.onerror = () => r(); }); }
 
+// Junta duas cópias da mesma sessão sem perder respostas: em cada item vale a alteração mais recente (campo t).
+export function mergeSes(local, remote) {
+  if (!local) return remote;
+  const L = local.resp || (local.resp = {}), Rm = remote.resp || {};
+  for (const k of Object.keys(Rm)) {
+    const a = L[k], b = Rm[k];
+    if (!a || (b.t || 0) > (a.t || 0) || (!a.r && b.r && !(a.t > (b.t || 0)))) L[k] = b;
+  }
+  if ((remote.u || 0) >= (local.u || 0)) { for (const k of ['cur', 'gasto', 'nome', 'dur']) if (remote[k] !== undefined) local[k] = remote[k]; local.u = remote.u; }
+  if (remote.status === 'fim' && local.status !== 'fim') Object.assign(local, { status: 'fim', fim: remote.fim, timeout: remote.timeout });
+  return local;
+}
+const SCALARES = ['u', 'cur', 'gasto', 'status', 'fim', 'timeout'];
+
 function deepMerge(a, b) {
   for (const k of Object.keys(b)) {
     if (b[k] && typeof b[k] === 'object' && !Array.isArray(b[k]) && a[k] && typeof a[k] === 'object' && !Array.isArray(a[k])) deepMerge(a[k], b[k]);
@@ -45,6 +59,7 @@ const Local = {
   async deleteBank(id) { delete S.bancos[id]; await kvSet('bancos', Object.values(S.bancos)); emit('bancos'); },
   setQ(sim, qid, patch) { const p = S.prog[sim] || (S.prog[sim] = { q: {} }); p.q[qid] = Object.assign(p.q[qid] || {}, patch); this._save(); },
   setSes(s) { S.ses[s.id] = s; this._save(); },
+  patchSes(s) { S.ses[s.id] = s; this._save(); },
   delSes(id) { delete S.ses[id]; this._save(); },
   setDisc(sim, did, patch) { const p = S.disc[sim] || (S.disc[sim] = { d: {} }); p.d[did] = Object.assign(p.d[did] || {}, patch); this._save(); },
   setPrefs(p) { Object.assign(S.prefs, p); this._save(); },
@@ -90,7 +105,7 @@ const Fire = {
     }, err => { console.warn(name, err); first[name] = 1; emit('erro'); });
     sub('bancos', (t, id, d) => { if (t === 'removed') delete S.bancos[id]; else { try { S.bancos[id] = JSON.parse(d.json); } catch (e) {} } });
     sub('progresso', (t, id, d) => { if (t === 'removed') delete S.prog[id]; else S.prog[id] = d; });
-    sub('sessoes', (t, id, d) => { if (t === 'removed') delete S.ses[id]; else S.ses[id] = d; });
+    sub('sessoes', (t, id, d) => { if (t === 'removed') delete S.ses[id]; else S.ses[id] = mergeSes(S.ses[id], d); });
     sub('disc', (t, id, d) => { if (t === 'removed') delete S.disc[id]; else S.disc[id] = d; });
     sub('config', (t, id, d) => { if (id === 'prefs' && t !== 'removed') S.prefs = d || {}; });
   },
@@ -101,7 +116,16 @@ const Fire = {
     p.q[qid] = Object.assign(p.q[qid] || {}, patch);
     F.fs.setDoc(this._p('progresso', sim), { q: { [qid]: patch } }, { merge: true }).catch(e => console.warn(e));
   },
-  setSes(s) { S.ses[s.id] = s; F.fs.setDoc(this._p('sessoes', s.id), JSON.parse(JSON.stringify(s))).catch(e => console.warn(e)); },
+  setSes(s) { S.ses[s.id] = s; F.fs.setDoc(this._p('sessoes', s.id), JSON.parse(JSON.stringify(s)), { merge: true }).catch(e => console.warn(e)); },
+  // grava só o que mudou: os campos simples e as respostas dos itens indicados (nunca a sessão inteira)
+  patchSes(s, qids = []) {
+    S.ses[s.id] = s;
+    const { FieldPath, updateDoc, setDoc } = F.fs, args = [];
+    for (const k of SCALARES) if (s[k] !== undefined) args.push(k, s[k]);
+    for (const q of qids) args.push(new FieldPath('resp', q), JSON.parse(JSON.stringify((s.resp || {})[q] || { t: Date.now() })));
+    if (!args.length) return;
+    updateDoc(this._p('sessoes', s.id), ...args).catch(() => setDoc(this._p('sessoes', s.id), JSON.parse(JSON.stringify(s)), { merge: true }).catch(e => console.warn(e)));
+  },
   delSes(id) { delete S.ses[id]; F.fs.deleteDoc(this._p('sessoes', id)).catch(() => {}); },
   setDisc(sim, did, patch) {
     const p = S.disc[sim] || (S.disc[sim] = { d: {} }); p.d = p.d || {};
@@ -127,6 +151,7 @@ export const store = {
   deleteBank: id => impl.deleteBank(id),
   setQ: (s, q, p) => impl.setQ(s, q, p),
   setSes: s => impl.setSes(s),
+  patchSes: (s, q) => impl.patchSes(s, q),
   delSes: id => impl.delSes(id),
   setDisc: (s, d, p) => impl.setDisc(s, d, p),
   setPrefs: p => impl.setPrefs(p),
