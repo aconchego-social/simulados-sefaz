@@ -152,7 +152,11 @@ function vHome() {
     if (b.dataset.m) go('setup', { modo: b.dataset.m });
     if (b.dataset.v) go(b.dataset.v);
     if (b.dataset.resume) startRun(S.ses[b.dataset.resume]);
-    if (b.dataset.drop) confirmBox('Descartar este treino? As respostas dele que ainda não foram encerradas serão perdidas.', () => { store.delSes(b.dataset.drop); render(); });
+    if (b.dataset.drop) confirmBox('Descartar este treino? As respostas dele que ainda não foram corrigidas serão perdidas.', () => {
+      const ss = S.ses[b.dataset.drop];
+      for (const [qid, r] of Object.entries((ss && ss.resp) || {})) if (Q[qid] && (st(qid).p || {}).ses === ss.id) setQ(qid, { p: null });
+      store.delSes(b.dataset.drop); render();
+    });
   };
 }
 
@@ -237,7 +241,8 @@ function novaSes(modo, nome, ord, extra) {
 /* ===================== resolução ===================== */
 function startRun(s, opts = {}) {
   clearInterval(tick);
-  R = { ses: s, list: opts.list || s.ord, i: opts.i ?? (opts.review ? 0 : s.cur || 0), t0: now(), review: !!opts.review, nota: false };
+  R = { ses: s, list: opts.list || s.ord, i: opts.i ?? (opts.review ? 0 : s.cur || 0), t0: now(), review: !!opts.review, nota: false, back: opts.back, done: {} };
+  if (!R.review) syncExt(s);
   VIEW = { v: 'run' }; tick = setInterval(onTick, 1000); scrollTo(0, 0); render();
 }
 function bank() { // acumula tempo (só na prova cronometrada)
@@ -255,8 +260,60 @@ function onTick() {
   el.lastChild.textContent = fmtT(left); el.classList.toggle('low', left < 900);
   if (left <= 0) { bank(); encerrar(true); }
 }
-function move(i) { if (!R || i < 0 || i >= R.list.length) return; bank(); R.i = i; R.nota = false; if (!R.review) { R.ses.cur = i; saveSes(); } scrollTo(0, 0); vRun(); }
-const revealedNow = qid => R.review || (R.ses.modo === 'item' && (R.ses.resp[qid] || {}).conf === true);
+function move(i) { if (!R || i < 0 || i >= R.list.length) return; bank(); R.i = i; R.nota = false; if (!R.review) syncExt(R.ses); if (!R.review) { R.ses.cur = i; saveSes(); } scrollTo(0, 0); vRun(); }
+const revealedNow = qid => R.review || (R.ses.modo !== 'prova' && (R.ses.resp[qid] || {}).conf === true);
+
+/* Itens respondidos em OUTRO treino livre depois que este começou aparecem aqui como já respondidos,
+   para não serem resolvidos (e contados) de novo. A prova cronometrada fica isolada, como numa prova real. */
+function syncExt(s) {
+  if (s.modo === 'prova') return;
+  for (const qid of s.ord) {
+    const own = s.resp[qid];
+    if (own && own.r && !own.ext) continue;
+    const p = st(qid).p, h = hist(qid);
+    const last = [...h].reverse().find(x => x.ses && x.ses !== s.id && x.t >= (s.ini || 0) && x.r !== 'B');
+    if (p && p.r && p.ses !== s.id && S.ses[p.ses] && S.ses[p.ses].status === 'andamento') s.resp[qid] = { r: p.r, c: p.c || 0, ext: 'pend' };
+    else if (last) s.resp[qid] = { r: last.r, c: last.c || 0, conf: true, ext: 'corr' };
+    else if (own && own.ext) delete s.resp[qid];
+  }
+}
+function pendente(qid, rr) { // resposta dada no modo "gabarito no final", ainda sem correção
+  if (R.ses.modo !== 'final') return;
+  setQ(qid, { p: rr.r ? { r: rr.r, c: rr.c || 0, ses: R.ses.id, t: now() } : null });
+}
+function corrigir(qids) { // registra no histórico e libera gabarito/comentário dos itens respondidos
+  const s = R.ses, feitos = [];
+  for (const qid of qids) {
+    const r = s.resp[qid], q = Q[qid];
+    if (!q || !r || !r.r || r.conf || r.ext) continue;
+    r.conf = true; feitos.push(qid);
+    const h = hist(qid).slice(); h.push({ t: now(), r: r.r, ok: r.r === q.gabarito, c: r.c || 0, m: s.modo, ses: s.id, anul: anulada(q) || undefined });
+    setQ(qid, { h, p: null });
+  }
+  saveSes(); return feitos;
+}
+function abertosDe(filtro) { return R.ses.ord.filter(id => { const r = R.ses.resp[id]; return r && r.r && !r.conf && !r.ext && Q[id] && filtro(Q[id]); }); }
+function corrigirSheet(motivo, materia) {
+  const q = { materia: materia || Q[R.list[R.i]].materia }, mat = abertosDe(x => x.materia === q.materia), tudo = abertosDe(() => true);
+  if (!tudo.length) return toast('Nenhum item respondido aguardando correção.');
+  sheet(`${motivo ? `<p style="font-size:17px;font-weight:800">${esc(motivo)}</p>` : '<h3>Ver gabarito agora</h3>'}
+  <p class="mut sm">Os itens corrigidos passam a mostrar gabarito e comentário e entram no seu desempenho. Os demais continuam escondidos.</p>
+  <div class="gap" style="margin-top:12px">
+    ${mat.length ? `<button class="btn pri" data-k="mat">Corrigir ${esc(q.materia)} (${mat.length})</button>` : ''}
+    ${tudo.length !== mat.length ? `<button class="btn ${mat.length ? '' : 'pri'}" data-k="all">Corrigir tudo que respondi (${tudo.length})</button>` : ''}
+    <button class="btn ghost" data-close>Agora não</button></div>`, e => {
+    const b = e.target.closest('[data-k]'); if (!b) return;
+    const ids = corrigir(b.dataset.k === 'mat' ? mat : tudo); closeSheet(); parcial(ids);
+  });
+}
+function parcial(ids) {
+  const s = R.ses; let c = 0, e = 0; for (const id of ids) { const q = Q[id]; if (anulada(q)) continue; s.resp[id].r === q.gabarito ? c++ : e++; }
+  sheet(`<h3>${ids.length} item(ns) corrigido(s)</h3>
+  <div class="kpis"><div class="kpi"><b class="${c - e < 0 ? 'neg' : ''}">${sgn(c - e)}</b><span>líquido</span></div><div class="kpi"><b>${c}</b><span>certos</span></div><div class="kpi"><b>${e}</b><span>errados</span></div><div class="kpi"><b>${pct(c, c + e) ?? '—'}${c + e ? '%' : ''}</b><span>acerto</span></div></div>
+  <div class="gap"><button class="btn pri" id="vc">Ver comentários desses itens</button><button class="btn ghost" data-close>Continuar resolvendo</button></div>`, ev => {
+    if (ev.target.id === 'vc') { closeSheet(); startRun(s, { review: true, list: ids, back: R.i }); }
+  });
+}
 
 function bubbles() {
   return R.list.map((id, i) => {
@@ -272,7 +329,7 @@ function bubbles() {
 function vRun() {
   const s = R.ses, qid = R.list[R.i], q = Q[qid];
   if (!q) { toast('Item não encontrado no banco.'); return go('home'); }
-  const S1 = st(qid), r = s.resp[qid] || {}, rev = revealedNow(qid);
+  const S1 = st(qid), r = s.resp[qid] || {}, rev = revealedNow(qid), lock = rev || !!r.ext;
   const feitos = Object.values(s.resp).filter(x => x.r).length;
   const modo = MODOS[s.modo];
   const cls = v => {
@@ -292,6 +349,7 @@ function vRun() {
       <button class="icon" id="close" aria-label="Sair">${ICON.x}</button>
       <div class="sp"><div class="xs mut" style="font-weight:700">${titulo}</div><div style="font-weight:800">Item ${R.i + 1} de ${R.list.length}${R.review ? '' : ` · ${feitos} respondidos`}</div></div>
       ${s.modo === 'prova' && !R.review ? `<div class="timer" id="timer">${ICON.clock}<span>0:00</span></div>` : ''}
+      ${s.modo === 'final' && !R.review ? `<button class="btn" id="corr" style="min-height:44px;padding:8px 12px">Corrigir</button>` : ''}
       <button class="icon" id="grid" aria-label="Mapa de itens">${ICON.grid}</button>
     </div>
     <div class="bubbles" id="bubs">${bubbles()}</div>
@@ -303,14 +361,15 @@ function vRun() {
     <div class="qtxt">${q.enunciado}</div>
   </div>
   <div class="ans">
-    <button data-a="C" ${cls('C')} ${rev ? 'disabled' : ''}>Certo</button>
-    <button data-a="E" ${cls('E')} ${rev ? 'disabled' : ''}>Errado</button>
+    <button data-a="C" ${cls('C')} ${lock ? 'disabled' : ''}>Certo</button>
+    <button data-a="E" ${cls('E')} ${lock ? 'disabled' : ''}>Errado</button>
   </div>
-  ${rev && !R.review ? '' : `<div class="conf"><div class="sm" style="font-weight:800">Quão seguro você está?</div><div class="opts">${[1, 2, 3].map(n => `<button data-c="${n}" aria-pressed="${r.c === n}" ${rev ? 'disabled' : ''}>${n}<small>${CONF[n]}</small></button>`).join('')}</div></div>`}
+  ${r.ext && !R.review ? `<div class="nota">${r.ext === 'pend' ? 'Você já respondeu este item em outro treino com gabarito no final. Ele conta uma vez só e será corrigido lá.' : 'Você já respondeu e corrigiu este item em outro treino. Ele não será contado de novo.'}</div>` : ''}
+  ${rev && !R.review ? '' : `<div class="conf"><div class="sm" style="font-weight:800">Quão seguro você está?</div><div class="opts">${[1, 2, 3].map(n => `<button data-c="${n}" aria-pressed="${r.c === n}" ${lock ? 'disabled' : ''}>${n}<small>${CONF[n]}</small></button>`).join('')}</div></div>`}
   <div class="tools">
     <button id="t-nota" aria-pressed="${!!(R.nota || S1.a1)}">${ICON.pen}Anotar</button>
     <button id="t-rev" aria-pressed="${!!S1.rev}">${ICON.flag}${S1.rev ? 'Em revisão' : 'Revisar'}</button>
-    ${!rev && r.r ? `<button id="t-clear">Limpar</button>` : ''}
+    ${!lock && r.r ? `<button id="t-clear">Limpar</button>` : ''}
   </div>
   ${(R.nota || S1.a1) ? `<label class="f" for="a1">Minha anotação durante a resolução</label><textarea id="a1" placeholder="Raciocínio, dúvida, palavra-chave…">${esc(S1.a1 || '')}</textarea>` : ''}
   ${verd}
@@ -319,10 +378,10 @@ function vRun() {
   ${hist(qid).length > 1 ? `<p class="mut xs" style="margin-top:8px">Histórico: ${hist(qid).map(h => h.r === 'B' ? 'branco' : (h.ok ? '✓' : '✗') + (h.c ? h.c : '')).join(' · ')}</p>` : ''}` : ''}`;
   const last = R.i === R.list.length - 1;
   let main;
-  if (R.review) main = last ? `<button class="btn pri" id="fim-rev">Voltar ao resultado</button>` : `<button class="btn pri" id="next">Próximo</button>`;
+  if (R.review) main = last ? `<button class="btn pri" id="fim-rev">${s.status === 'andamento' ? 'Voltar a resolver' : 'Voltar ao resultado'}</button>` : `<button class="btn pri" id="next">Próximo</button>`;
   else if (s.modo === 'item' && !rev) main = `<button class="btn pri" id="confirm" ${r.r && r.c ? '' : 'disabled'}>${r.r && !r.c ? 'Marque a certeza' : 'Confirmar e ver comentário'}</button>`;
-  else if (last) main = s.modo === 'item' ? `<button class="btn pri" id="fim-item">Concluir bloco</button>` : `<button class="btn pri" id="fim">Encerrar e ver resultado</button>`;
-  else main = `<button class="btn pri" id="next">${s.modo === 'item' ? 'Próximo item' : r.r ? 'Confirmar e seguir' : 'Pular'}</button>`;
+  else if (last) main = s.modo === 'item' ? `<button class="btn pri" id="fim-item">Concluir bloco</button>` : `<button class="btn pri" id="fim">${s.modo === 'final' ? 'Encerrar e corrigir' : 'Encerrar e ver resultado'}</button>`;
+  else main = `<button class="btn pri" id="next">${s.modo === 'item' || rev || r.ext ? 'Próximo item' : r.r ? 'Confirmar e seguir' : 'Pular'}</button>`;
   $('#nav').innerHTML = `<nav class="nav"><div class="in"><button class="btn" id="prev" aria-label="Anterior" ${R.i ? '' : 'disabled'}>${ICON.left}</button>${main}</div></nav>`;
   const cur = $('#bubs .cur'); if (cur) cur.scrollIntoView({ block: 'nearest', inline: 'center' });
   onTick();
@@ -334,31 +393,39 @@ function vRun() {
   app().onclick = e => {
     const b = e.target.closest('button'); if (!b) return;
     if (b.dataset.i) return move(+b.dataset.i);
-    if (b.dataset.a) { const rr = s.resp[qid] || (s.resp[qid] = {}); rr.r = rr.r === b.dataset.a && s.modo !== 'item' ? null : b.dataset.a; saveSes(); return vRun(); }
-    if (b.dataset.c) { const rr = s.resp[qid] || (s.resp[qid] = {}); rr.c = +b.dataset.c; saveSes(); return vRun(); }
-    if (b.id === 't-clear') { s.resp[qid] = { s: r.s }; saveSes(); return vRun(); }
+    if (b.dataset.a) { const rr = s.resp[qid] || (s.resp[qid] = {}); rr.r = rr.r === b.dataset.a && s.modo !== 'item' ? null : b.dataset.a; saveSes(); pendente(qid, rr); return vRun(); }
+    if (b.dataset.c) { const rr = s.resp[qid] || (s.resp[qid] = {}); rr.c = +b.dataset.c; saveSes(); pendente(qid, rr); return vRun(); }
+    if (b.id === 't-clear') { s.resp[qid] = { s: r.s }; saveSes(); pendente(qid, {}); return vRun(); }
+    if (b.id === 'corr') return corrigirSheet();
     if (b.id === 't-nota') { R.nota = !R.nota; vRun(); const t = $('#a1'); if (t) t.focus(); return; }
     if (b.id === 't-rev') { setQ(qid, { rev: !S1.rev }); return vRun(); }
     if (b.id === 'ass') return assuntoSheet(q);
     if (b.id === 'grid') return gridSheet();
-    if (b.id === 'close') { if (R.review) return go('result', { ses: s.id }); return go('home'); }
+    if (b.id === 'close') { if (R.review) return s.status === 'andamento' ? startRun(s, { i: R.back ?? s.cur }) : go('result', { ses: s.id }); return go('home'); }
     if (e.target.closest('summary')) R.ctxOpen = !e.target.closest('details').open;
   };
   $('#nav').onclick = e => {
     const id = e.target.closest('button')?.id; if (!id) return;
     if (id === 'prev') move(R.i - 1);
-    if (id === 'next') move(R.i + 1);
+    if (id === 'next') {
+      const nq = Q[R.list[R.i + 1]];
+      // fim de matéria no modo "gabarito no final": oferece a correção do bloco
+      if (s.modo === 'final' && !R.review && nq && nq.materia !== q.materia && !R.done[q.materia] && abertosDe(x => x.materia === q.materia).length) {
+        R.done[q.materia] = true; move(R.i + 1); return corrigirSheet(`Você chegou ao fim de ${q.materia}. Quer ver o gabarito e os comentários agora?`, q.materia);
+      }
+      move(R.i + 1);
+    }
     if (id === 'confirm') confirmarItem(qid);
     if (id === 'fim') { const falta = R.list.filter(x => !(s.resp[x] || {}).r).length; confirmBox(`Encerrar ${s.modo === 'prova' ? 'a prova' : 'o bloco'}?${falta ? ` ${falta} item(ns) ficarão em branco.` : ''}`, () => encerrar(false)); }
     if (id === 'fim-item') encerrar(false);
-    if (id === 'fim-rev') go('result', { ses: s.id });
+    if (id === 'fim-rev') { if (s.status === 'andamento') startRun(s, { i: R.back ?? s.cur }); else go('result', { ses: s.id }); }
   };
 }
 function confirmarItem(qid) {
   const s = R.ses, r = s.resp[qid], q = Q[qid];
   r.conf = true; saveSes();
   const h = hist(qid).slice(); h.push({ t: now(), r: r.r, ok: r.r === q.gabarito, c: r.c || 0, m: 'item', ses: s.id, anul: anulada(q) || undefined });
-  setQ(qid, { h }); vRun();
+  setQ(qid, { h, p: null }); vRun();
 }
 function encerrar(timeout) {
   const s = R.ses; bank(); clearInterval(tick);
@@ -366,9 +433,12 @@ function encerrar(timeout) {
   if (s.modo !== 'item') {
     for (const qid of s.ord) {
       const q = Q[qid]; if (!q) continue; const r = s.resp[qid] || {};
+      if (r.ext || r.conf) continue;               // já contado (outro treino ou correção parcial)
+      if (s.modo === 'final' && !r.r) continue;     // no treino livre, item não respondido não vira "branco"
+      r.conf = true;
       const h = hist(qid).slice();
       h.push({ t: s.fim, r: r.r || 'B', ok: r.r === q.gabarito, c: r.r ? (r.c || 0) : 0, m: s.modo, s: r.s ? Math.round(r.s) : undefined, ses: s.id, anul: anulada(q) || undefined });
-      setQ(qid, { h: JSON.parse(JSON.stringify(h)) });
+      setQ(qid, Object.assign({ h: JSON.parse(JSON.stringify(h)) }, s.modo === 'final' ? { p: null } : {}));
     }
   }
   store.setSes(s); R = null; go('result', { ses: s.id });
