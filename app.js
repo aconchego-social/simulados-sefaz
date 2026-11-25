@@ -256,12 +256,19 @@ function bank() { // acumula tempo (só na prova cronometrada)
 }
 function saveSes(qids = []) { R.ses.u = now(); for (const q of qids) { const r = R.ses.resp[q]; if (r) r.t = now(); } store.patchSes(R.ses, qids); }
 // Reconstrói as respostas da sessão a partir do que ficou guardado item a item (histórico e respostas pendentes).
+const VERSAO = 'v8';
+function diag(s) {
+  let h = 0, p = 0;
+  for (const qid of s.ord || []) { if (hist(qid).some(x => x.ses === s.id && x.r && x.r !== 'B')) h++; const pp = st(qid).p; if (pp && pp.ses === s.id && pp.r) p++; }
+  const copia = { ...s, resp: { ...(s.resp || {}) } };
+  return { resp: Object.values(s.resp || {}).filter(r => r.r).length, h, p, rec: rebuild(copia) };
+}
 function rebuild(s) {
   let n = 0;
   for (const qid of s.ord || []) {
     if (!Q[qid]) continue; const own = s.resp[qid];
     if (own && (own.r || own.redo)) continue;
-    const h = [...hist(qid)].reverse().find(x => x.ses === s.id && x.r !== 'B');
+    const h = [...hist(qid)].reverse().find(x => x.r && x.r !== 'B' && (x.ses === s.id || (x.m === s.modo && x.t >= (s.ini || 0) && (!x.ses || !S.ses[x.ses]))));
     const p = st(qid).p;
     if (h) { s.resp[qid] = { r: h.r, c: h.c || 0, conf: true, t: h.t }; n++; }
     else if (p && p.ses === s.id && p.r) { s.resp[qid] = { r: p.r, c: p.c || 0, t: p.t }; n++; }
@@ -921,10 +928,14 @@ function vDados() {
   ${SIMS.map(s => `<div class="row sm"><span class="sp">${esc(s.nome)} · ${esc(s.data || '')}</span><span class="mut">${s.questoes.length} itens</span></div>`).join('') || '<p class="mut sm">Nenhum.</p>'}
   <label class="f" for="imp">Importar banco de questões (.json)</label><input type="file" id="imp" accept=".json,application/json">
   <p class="mut xs">Aceita o arquivo completo ou um simulado avulso. Um simulado com o mesmo identificador é substituído (o seu progresso é mantido).</p></div>
+  <div class="card gap" style="margin-top:12px"><h3>Sessões em andamento</h3>
+  ${Object.values(S.ses).filter(x => x.status === 'andamento').map(x => { const d = diag(x); return `<p class="sm"><b>${esc(x.nome)}</b> · ${esc(x.id)}<br>na sessão: ${d.resp} · corrigidos com este id: ${d.h} · pendentes com este id: ${d.p} · recuperáveis: ${d.rec}</p>`; }).join('') || '<p class="mut sm">Nenhuma.</p>'}
+  <button class="btn" id="repara">Reconstruir respostas das sessões</button><p class="mut xs">Versão do app: ${VERSAO}</p></div>
   <div class="card gap" style="margin-top:12px"><h3>Backup do progresso</h3>
   <div class="row"><button class="btn" id="exp">Baixar backup</button><label class="btn" style="display:inline-flex;align-items:center">Restaurar backup<input type="file" id="bkp" accept=".json" hidden></label></div></div>`;
   app().onclick = async e => {
     if (e.target.id === 'out') store.signOut();
+    if (e.target.id === 'repara') { let n = 0; for (const x of Object.values(S.ses)) if (x.status === 'andamento') { const k = rebuild(x); if (k) { n += k; store.setSes(x); } } toast(n + ' resposta(s) recuperada(s).'); vDados(); }
     if (e.target.id === 'exp') {
       const blob = new Blob([JSON.stringify({ app: 'simulados-sefaz', v: 2, em: now(), prog: S.prog, ses: S.ses, disc: S.disc, prefs: S.prefs })], { type: 'application/json' });
       const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'backup-simulados-' + new Date().toISOString().slice(0, 10) + '.json'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 3000);
