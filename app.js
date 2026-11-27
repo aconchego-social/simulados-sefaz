@@ -43,6 +43,9 @@ function setQ(qid, patch) { patch.u = now(); store.setQ(Q[qid].sim, qid, patch);
 function assuntoCod(q) { return st(q.id).as || q.assunto_cod; }
 function assuntoLabel(q) { const c = assuntoCod(q); const t = (TAX[q.materia] || []).find(x => x[0] === c); return t ? t[1] : (q.assunto || '—'); }
 const bloco = q => q.bloco || (P1.includes(q.materia) ? 'P1' : 'P2');
+// Origem do item: questão real de prova, inédita (autoral) ou do cursinho (simulados do Estratégia, sem o campo)
+const ORIG = [['real', 'Real de prova'], ['inedita', 'Inédita'], ['curso', 'Do cursinho']];
+const origemQ = q => q.origem || 'curso';
 const anulada = q => q.gabarito === 'X';
 
 /* ===================== estatística ===================== */
@@ -256,7 +259,7 @@ function bank() { // acumula tempo (só na prova cronometrada)
 }
 function saveSes(qids = []) { R.ses.u = now(); for (const q of qids) { const r = R.ses.resp[q]; if (r) r.t = now(); } store.patchSes(R.ses, qids); }
 // Reconstrói as respostas da sessão a partir do que ficou guardado item a item (histórico e respostas pendentes).
-const VERSAO = 'v8';
+const VERSAO = 'v9';
 function diag(s) {
   let h = 0, p = 0;
   for (const qid of s.ord || []) { if (hist(qid).some(x => x.ses === s.id && x.r && x.r !== 'B')) h++; const pp = st(qid).p; if (pp && pp.ses === s.id && pp.r) p++; }
@@ -380,7 +383,7 @@ function vRun() {
     <div class="bubbles" id="bubs">${bubbles()}</div>
   </div>
   <div class="qcard">
-    <div class="qhead"><span class="tag">${esc(q.materia)}</span><button class="asschip" id="ass" title="Trocar assunto">${esc(assuntoLabel(q))}</button>${q.nota_revisao ? '<span class="tag warn">nota de revisão</span>' : ''}${q.alterado && rev ? '<span class="tag warn">gabarito alterado</span>' : ''}</div>
+    <div class="qhead"><span class="tag">${esc(q.materia)}</span><button class="asschip" id="ass" title="Trocar assunto">${esc(assuntoLabel(q))}</button>${q.nota_revisao ? '<span class="tag warn">nota de revisão</span>' : ''}${q.alterado && rev ? '<span class="tag warn">gabarito alterado</span>' : ''}${q.origem === 'inedita' && rev ? '<span class="tag">inédita</span>' : ''}</div>
     <div class="xs mut">Item ${q.n} · ${esc(simNome(q.sim))}</div>
     ${ctx}
     <div class="qtxt">${q.enunciado}</div>
@@ -558,19 +561,20 @@ function vHist() {
 /* ===================== desempenho ===================== */
 function PF() {
   const p = S.prefs.perf || {};
-  return { sims: p.sims || [], basis: p.basis || 'last', conf: new Set(p.conf || [0, 1, 2, 3]) };
+  return { sims: p.sims || [], orig: p.orig || [], basis: p.basis || 'last', conf: new Set(p.conf || [0, 1, 2, 3]) };
 }
 function perfFilters() {
   const p = PF();
   return `<div class="card gap">
   <div><label class="f" style="margin-top:0">Simulados <span class="xs">(nenhum = todos)</span></label><div class="chips" id="p-sims">${SIMS.map(s => `<button class="chip" aria-pressed="${p.sims.includes(s.id)}" data-x="${esc(s.id)}">${esc(s.nome.replace('Estratégia · ', ''))}</button>`).join('')}</div></div>
+  <div><label class="f">Origem dos itens <span class="xs">(nenhuma = todas)</span></label><div class="chips" id="p-orig">${ORIG.map(([k, l]) => `<button class="chip" aria-pressed="${p.orig.includes(k)}" data-x="${k}">${l}</button>`).join('')}</div></div>
   <div><label class="f">Contar itens respondidos com certeza</label><div class="chips" id="p-conf">${[[3, '3 · Muito'], [2, '2 · Médio'], [1, '1 · Pouco'], [0, 'Sem nível']].map(([l, t]) => `<button class="chip" aria-pressed="${p.conf.has(l)}" data-x="${l}">${t}</button>`).join('')}</div>
   <p class="mut xs" style="margin-top:6px">Os níveis desligados contam como em branco, como numa prova em que você não os marcaria.</p></div>
   <div><label class="f" for="p-basis">Resposta considerada</label><select id="p-basis"><option value="last" ${p.basis === 'last' ? 'selected' : ''}>A mais recente de cada item</option><option value="first" ${p.basis === 'first' ? 'selected' : ''}>A primeira (sem revisão)</option></select></div></div>`;
 }
 function bindPerf(rerender, rowClick) {
   app().onclick = e => {
-    const c = e.target.closest('#p-sims .chip, #p-conf .chip');
+    const c = e.target.closest('#p-sims .chip, #p-conf .chip, #p-orig .chip');
     if (c) { c.setAttribute('aria-pressed', c.getAttribute('aria-pressed') !== 'true'); savePF(); return rerender(); }
     rowClick && rowClick(e);
   };
@@ -579,7 +583,7 @@ function bindPerf(rerender, rowClick) {
 function savePF() {
   const sel = id => [...document.querySelectorAll(`#${id} [aria-pressed=true]`)].map(b => b.dataset.x);
   const conf = sel('p-conf').map(Number);
-  store.setPrefs({ perf: { sims: sel('p-sims'), conf: conf.length ? conf : [0, 1, 2, 3], basis: ($('#p-basis') || {}).value || 'last' } });
+  store.setPrefs({ perf: { sims: sel('p-sims'), orig: sel('p-orig'), conf: conf.length ? conf : [0, 1, 2, 3], basis: ($('#p-basis') || {}).value || 'last' } });
 }
 function perfTable(rows, key) {
   return `<div class="card scroll"><table class="t"><thead><tr><th>${key === 'mat' ? 'Matéria' : 'Assunto'}</th><th>Resp.</th><th>C</th><th>E</th><th>Líq.</th><th>Acerto</th><th class="hide-sm">Firmes</th></tr></thead><tbody>
@@ -587,7 +591,7 @@ function perfTable(rows, key) {
   </tbody></table><div class="legend"><span><i class="c3"></i>certeza 3</span><span><i class="c2"></i>certeza 2</span><span><i class="c1"></i>certeza 1</span><span>"Firmes" = % respondida com certeza 2 ou 3</span></div>
   <p class="mut xs" style="margin-top:6px">Ordenado do menor para o maior acerto. Toque numa linha para ${key === 'mat' ? 'ver os assuntos' : 'treinar o assunto'}.</p></div>`;
 }
-function scopeIds() { const p = PF(); return Object.values(Q).filter(q => !p.sims.length || p.sims.includes(q.sim)); }
+function scopeIds() { const p = PF(); return Object.values(Q).filter(q => (!p.sims.length || p.sims.includes(q.sim)) && (!p.orig.length || p.orig.includes(origemQ(q)))); }
 function vPerf() {
   const p = PF(), qs = scopeIds(), ids = qs.map(q => q.id), tot = agg(ids, p);
   const groups = {}; for (const q of qs) (groups[q.materia] = groups[q.materia] || []).push(q.id);
@@ -603,8 +607,23 @@ function vPerf() {
   ${tot.res ? `<div class="card gap">${blocos.map(b => `<div><b>${b.k === 'P1' ? 'P1 · Conhecimentos básicos' : 'P2 · Conhecimentos específicos'}</b><div class="mut sm">${b.ac ?? '—'}${b.ac != null ? '%' : ''} de acerto · líquido ${sgn(b.liq)} em ${b.c + b.e + b.b + b.fora} itens respondidos</div></div>`).join('')}</div>
   <h2>Certeza × acerto</h2>${confTable(tot.nivel)}
   <h2>Qual estratégia rende mais</h2>${estrategias(tot.nivel)}
+  ${origTable(qs, p)}
   <h2>Por matéria</h2>${perfTable(rows, 'mat')}` : '<div class="card empty">Ainda não há respostas nesse recorte.</div>'}`;
   bindPerf(vPerf, e => { const tr = e.target.closest('tr[data-k]'); if (tr) go('mat', { mat: tr.dataset.k }); });
+}
+// Real × inédita × cursinho: mostra se os itens inéditos estão mais fáceis ou mais difíceis que os reais
+function origTable(qs, p) {
+  const rows = ORIG.map(([k, l]) => Object.assign({ k, l }, agg(qs.filter(q => origemQ(q) === k).map(q => q.id), p))).filter(r => r.res);
+  if (rows.length < 2) return '';
+  const real = rows.find(r => r.k === 'real'), ined = rows.find(r => r.k === 'inedita');
+  let nota = '';
+  if (real && ined && real.ac != null && ined.ac != null && real.c + real.e >= 20 && ined.c + ined.e >= 20) {
+    const d = ined.ac - real.ac;
+    nota = Math.abs(d) < 8 ? 'As inéditas estão num nível parecido com o das questões reais.' : d > 0 ? `Você acerta ${d} pontos a mais nas inéditas: elas parecem mais fáceis que as reais da banca.` : `Você acerta ${-d} pontos a menos nas inéditas: elas parecem mais difíceis (ou mais literais) que as reais.`;
+  }
+  return `<h2>Por origem do item</h2><div class="card scroll"><table class="t"><thead><tr><th>Origem</th><th>Resp.</th><th>C</th><th>E</th><th>Líq.</th><th>Acerto</th><th class="hide-sm">Firmes</th></tr></thead><tbody>
+  ${rows.map(r => `<tr><td>${esc(r.l)}</td><td>${r.c + r.e}</td><td>${r.c}</td><td>${r.e}</td><td class="${r.liq < 0 ? 'neg' : ''}">${sgn(r.liq)}</td><td>${r.ac ?? '—'}${r.ac != null ? '%' : ''}</td><td class="hide-sm">${r.firmes ?? '—'}${r.firmes != null ? '%' : ''}</td></tr>`).join('')}
+  </tbody></table>${nota ? `<p class="sm" style="margin-top:8px">${nota}</p>` : ''}<p class="mut xs" style="margin-top:6px">Compare só a mesma matéria (filtre os simulados) para a comparação ser justa: a diferença também reflete o assunto.</p></div>`;
 }
 function vMat() {
   const m = VIEW.mat, p = PF(); const qs = scopeIds().filter(q => q.materia === m);
@@ -816,14 +835,16 @@ function relSimulado() {
 const FILTROS = {
   res: [['err', 'Errei'], ['ac', 'Acertei'], ['br', 'Em branco'], ['nunca', 'Nunca respondi']],
   cert: [['3', '3 · Muito'], ['2', '2 · Médio'], ['1', '1 · Pouco'], ['0', 'Sem nível']],
+  orig: ORIG,
   out: [['rev', 'Em revisão'], ['nota', 'Com anotação minha'], ['alt', 'Gabarito alterado/anulado'], ['nr', 'Com nota de revisão']],
 };
-function BF() { return Object.assign({ sims: [], mats: [], ass: [], res: [], cert: [], out: [], basis: 'last' }, S.prefs.banco || {}); }
+function BF() { return Object.assign({ sims: [], mats: [], ass: [], res: [], cert: [], out: [], orig: [], basis: 'last' }, S.prefs.banco || {}); }
 function filtraBanco(F) {
   return Object.values(Q).filter(q => {
     if (F.sims.length && !F.sims.includes(q.sim)) return false;
     if (F.mats.length && !F.mats.includes(q.materia)) return false;
     if (F.ass.length && !F.ass.includes(assuntoCod(q))) return false;
+    if (F.orig.length && !F.orig.includes(origemQ(q))) return false;
     const a = pick(q.id, F.basis), s = st(q.id);
     if (F.res.length) {
       const k = !a ? 'nunca' : a.r === 'B' ? 'br' : anulada(q) ? 'x' : a.ok ? 'ac' : 'err';
@@ -841,7 +862,7 @@ function filtraBanco(F) {
 }
 function vBanco() {
   const F = BF(), lista = filtraBanco(F), lim = VIEW.lim || 40;
-  const ativos = ['sims', 'mats', 'ass', 'res', 'cert', 'out'].reduce((t, k) => t + F[k].length, 0);
+  const ativos = ['sims', 'mats', 'ass', 'res', 'cert', 'out', 'orig'].reduce((t, k) => t + F[k].length, 0);
   const trecho = h => { const t = plain(h); if (t.length <= 170) return t; const c = t.slice(-170); return '…' + c.slice(c.indexOf(' ') + 1); };
   const assOpts = F.mats.length === 1 ? (TAX[F.mats[0]] || []) : [];
   const grupo = (id, titulo, opts, sel) => `<label class="f">${titulo}</label><div class="chips" data-g="${id}">${opts.map(([k, l]) => `<button class="chip" aria-pressed="${sel.includes(k)}" data-x="${esc(k)}">${esc(l)}</button>`).join('')}</div>`;
@@ -851,6 +872,7 @@ function vBanco() {
   <details class="card" id="b-filt" ${VIEW.fopen ?? true ? 'open' : ''}><summary style="cursor:pointer;font-weight:800">Filtros${ativos ? ` · ${ativos} ativo(s)` : ''}</summary>
     ${grupo('res', 'Resultado', FILTROS.res, F.res)}
     ${grupo('cert', 'Certeza marcada', FILTROS.cert, F.cert)}
+    ${grupo('orig', 'Origem', FILTROS.orig, F.orig)}
     ${grupo('out', 'Outros', FILTROS.out, F.out)}
     ${grupo('mats', 'Matérias', MATS.map(m => [m, m]), F.mats)}
     ${assOpts.length ? grupo('ass', 'Assuntos de ' + F.mats[0], assOpts, F.ass) : '<p class="mut xs" style="margin-top:8px">Marque uma única matéria para filtrar por assunto.</p>'}
@@ -872,7 +894,7 @@ function vBanco() {
     const c = e.target.closest('.chip');
     if (c) { const g = c.parentElement.dataset.g, cur = BF()[g].slice(), k = c.dataset.x; const i = cur.indexOf(k); i >= 0 ? cur.splice(i, 1) : cur.push(k); const patch = { [g]: cur }; if (g === 'mats') patch.ass = []; return save(patch); }
     const id = e.target.closest('button')?.id;
-    if (id === 'b-clear') return save({ sims: [], mats: [], ass: [], res: [], cert: [], out: [] });
+    if (id === 'b-clear') return save({ sims: [], mats: [], ass: [], res: [], cert: [], out: [], orig: [] });
     if (id === 'b-more') { VIEW.lim = lim + 60; return vBanco(); }
     if (id === 'b-study') return estudar(lista.map(q => q.id), 0, F.basis);
     if (id === 'b-item' || id === 'b-final') return startRun(novaSes(id === 'b-item' ? 'item' : 'final', nome(), lista.map(q => q.id), {}));
