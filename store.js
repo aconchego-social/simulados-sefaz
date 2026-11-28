@@ -99,9 +99,12 @@ const Fire = {
     const { onSnapshot } = F.fs;
     let first = { bancos: 0, progresso: 0, sessoes: 0, disc: 0, config: 0 };
     const done = () => Object.values(first).every(Boolean);
-    const sub = (name, fn) => onSnapshot(this._c(name), { includeMetadataChanges: false }, snap => {
-      snap.docChanges().forEach(ch => fn(ch.type, ch.doc.id, ch.doc.data()));
-      if (!first[name]) { first[name] = 1; if (done()) emit('all'); } else emit(name);
+    S.srv = S.srv || {};
+    const sub = (name, fn) => onSnapshot(this._c(name), { includeMetadataChanges: true }, snap => {
+      const ch = snap.docChanges();
+      ch.forEach(c => fn(c.type, c.doc.id, c.doc.data()));
+      const novoSrv = !snap.metadata.fromCache && !S.srv[name]; if (novoSrv) S.srv[name] = 1;
+      if (!first[name]) { first[name] = 1; if (done()) emit('all'); } else if (ch.length || novoSrv) emit(name);
     }, err => { console.warn(name, err); first[name] = 1; emit('erro'); });
     sub('bancos', (t, id, d) => { if (t === 'removed') delete S.bancos[id]; else { try { S.bancos[id] = JSON.parse(d.json); } catch (e) {} } });
     sub('progresso', (t, id, d) => { if (t === 'removed') delete S.prog[id]; else S.prog[id] = d; });

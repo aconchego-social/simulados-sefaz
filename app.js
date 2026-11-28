@@ -120,6 +120,7 @@ function vVazio() {
 function vHome() {
   const all = Object.keys(Q); const a = agg(all);
   const abertas = Object.values(S.ses).filter(s => s.status === 'andamento').sort((x, y) => (y.u || 0) - (x.u || 0));
+  orfas();
   for (const s of Object.values(S.ses)) if (rebuild(s)) store.setSes(s);
   const nrev = all.filter(id => st(id).rev).length;
   app().innerHTML = `
@@ -158,11 +159,18 @@ function vHome() {
     if (b.dataset.m) go('setup', { modo: b.dataset.m });
     if (b.dataset.v) go(b.dataset.v);
     if (b.dataset.resume) startRun(S.ses[b.dataset.resume]);
-    if (b.dataset.drop) confirmBox('Descartar este treino? As respostas dele que ainda não foram corrigidas serão perdidas.', () => {
-      const ss = S.ses[b.dataset.drop];
-      for (const [qid, r] of Object.entries((ss && ss.resp) || {})) if (Q[qid] && (st(qid).p || {}).ses === ss.id) setQ(qid, { p: null });
-      store.delSes(b.dataset.drop); render();
-    });
+    if (b.dataset.drop) {
+      const ss = S.ses[b.dataset.drop]; if (!ss) return;
+      const corr = (ss.ord || []).filter(q => Q[q] && hist(q).some(x => x.ses === ss.id)).length;
+      confirmBox(corr ? `Encerrar este treino? Os ${corr} item(ns) já corrigidos ficam no histórico; as respostas ainda não corrigidas serão descartadas.` : 'Descartar este treino? As respostas dele ainda não foram corrigidas e serão perdidas.', () => {
+        for (const qid of Object.keys(ss.resp || {})) if (Q[qid] && (st(qid).p || {}).ses === ss.id) setQ(qid, { p: null });
+        if (corr) {
+          for (const [qid, r] of Object.entries(ss.resp || {})) if (!r.conf && !r.ext) delete ss.resp[qid];
+          Object.assign(ss, { status: 'fim', fim: now(), u: now() }); store.setSes(ss);
+        } else store.delSes(ss.id);
+        render();
+      });
+    }
   };
 }
 
@@ -259,7 +267,31 @@ function bank() { // acumula tempo (só na prova cronometrada)
 }
 function saveSes(qids = []) { R.ses.u = now(); for (const q of qids) { const r = R.ses.resp[q]; if (r) r.t = now(); } store.patchSes(R.ses, qids); }
 // Reconstrói as respostas da sessão a partir do que ficou guardado item a item (histórico e respostas pendentes).
-const VERSAO = 'v9';
+const VERSAO = 'v10';
+/* Treinos cuja ficha sumiu (descartada ou apagada por outro aparelho) mas cujas respostas corrigidas
+   continuam no registro das questões: a ficha é refeita a partir desses registros e vai para o histórico. */
+function orfas() {
+  if (S.mode === 'firebase' && !(S.srv && S.srv.sessoes && S.srv.progresso && S.srv.bancos)) return 0; // só com os dados confirmados pelo servidor
+  const grupos = {};
+  for (const qid of Object.keys(Q)) for (const x of hist(qid)) {
+    if (!x.ses || S.ses[x.ses]) continue;
+    const g = grupos[x.ses] = grupos[x.ses] || { recs: {}, modos: {}, sims: new Set(), t0: Infinity, t1: 0 };
+    if (!g.recs[qid] || x.t >= g.recs[qid].t) g.recs[qid] = x;
+    g.modos[x.m] = (g.modos[x.m] || 0) + 1; g.sims.add(Q[qid].sim); g.t0 = Math.min(g.t0, x.t); g.t1 = Math.max(g.t1, x.t);
+  }
+  let n = 0;
+  for (const [id, g] of Object.entries(grupos)) {
+    let modo = Object.entries(g.modos).sort((a, b) => b[1] - a[1])[0][0]; if (!MODOS[modo]) modo = 'final';
+    const um = g.sims.size === 1 ? [...g.sims][0] : null;
+    const ord = um ? simById(um).questoes.map(q => q.id) : Object.keys(g.recs).sort((a, b) => Object.keys(Q).indexOf(a) - Object.keys(Q).indexOf(b));
+    const resp = {};
+    for (const [qid, x] of Object.entries(g.recs)) resp[qid] = x.r && x.r !== 'B' ? { r: x.r, c: x.c || 0, conf: true, t: x.t } : { conf: true, t: x.t };
+    const ses = { id, modo, nome: um ? simNome(um) : 'Treino recuperado', ord, resp, cur: 0, gasto: 0, ini: g.t0, fim: g.t1, status: 'fim', recuperado: true, u: now() };
+    if (modo === 'prova') ses.dur = 270;
+    S.ses[id] = ses; store.setSes(ses); n++;
+  }
+  return n;
+}
 function diag(s) {
   let h = 0, p = 0;
   for (const qid of s.ord || []) { if (hist(qid).some(x => x.ses === s.id && x.r && x.r !== 'B')) h++; const pp = st(qid).p; if (pp && pp.ses === s.id && pp.r) p++; }
@@ -553,6 +585,7 @@ function vResult() {
   };
 }
 function vHist() {
+  orfas();
   const fins = Object.values(S.ses).filter(s => s.status === 'fim').sort((a, b) => b.fim - a.fim);
   for (const s of fins) if (rebuild(s)) store.setSes(s);
   app().innerHTML = header('Histórico') + (fins.length ? `<div class="card">${fins.map(s => { const sc = sesScore(s); return `<div class="li"><div class="x"><span class="tag">${esc(MODOS[s.modo].nome)}</span><h3 style="margin-top:6px">${esc(s.nome)}</h3><div class="mut sm">${fmtD(s.fim)} · ${s.ord.length} itens${s.modo === 'prova' ? ' · ' + fmtT(s.gasto || 0) : ''}</div></div><div style="text-align:right"><b class="${sc.liq < 0 ? 'neg' : ''}">${sgn(sc.liq)}</b><div class="mut xs">${sc.c}C ${sc.e}E</div></div><button class="btn" data-s="${esc(s.id)}">Abrir</button></div>`; }).join('')}</div>`
@@ -953,13 +986,13 @@ function vDados() {
   <label class="f" for="imp">Importar banco de questões (.json)</label><input type="file" id="imp" accept=".json,application/json">
   <p class="mut xs">Aceita o arquivo completo ou um simulado avulso. Um simulado com o mesmo identificador é substituído (o seu progresso é mantido).</p></div>
   <div class="card gap" style="margin-top:12px"><h3>Sessões (diagnóstico)</h3>
-  ${Object.values(S.ses).sort((a, b) => (b.u || 0) - (a.u || 0)).map(x => { const d = diag(x); return `<p class="sm"><b>${esc(x.nome)}</b> · ${x.status === 'fim' ? 'encerrada' : 'em andamento'} · ${esc(x.id)}<br>na sessão: ${d.resp} · corrigidos com este id: ${d.h} · pendentes com este id: ${d.p} · recuperáveis: ${d.rec}</p>`; }).join('') || '<p class="mut sm">Nenhuma.</p>'}
+  ${Object.values(S.ses).sort((a, b) => (b.u || 0) - (a.u || 0)).map(x => { const d = diag(x); return `<p class="sm"><b>${esc(x.nome)}</b> · ${x.status === 'fim' ? (x.recuperado ? 'encerrada · recuperada' : 'encerrada') : 'em andamento'} · ${esc(x.id)}<br>na sessão: ${d.resp} · corrigidos com este id: ${d.h} · pendentes com este id: ${d.p} · recuperáveis: ${d.rec}</p>`; }).join('') || '<p class="mut sm">Nenhuma.</p>'}
   <button class="btn" id="repara">Reconstruir respostas das sessões</button><p class="mut xs">Versão do app: ${VERSAO}</p></div>
   <div class="card gap" style="margin-top:12px"><h3>Backup do progresso</h3>
   <div class="row"><button class="btn" id="exp">Baixar backup</button><label class="btn" style="display:inline-flex;align-items:center">Restaurar backup<input type="file" id="bkp" accept=".json" hidden></label></div></div>`;
   app().onclick = async e => {
     if (e.target.id === 'out') store.signOut();
-    if (e.target.id === 'repara') { let n = 0; for (const x of Object.values(S.ses)) { const k = rebuild(x); if (k) { n += k; store.setSes(x); } } toast(n + ' resposta(s) recuperada(s).'); vDados(); }
+    if (e.target.id === 'repara') { let n = 0; const o = orfas(); if (o) toast(o + ' treino(s) recuperado(s) para o histórico.'); for (const x of Object.values(S.ses)) { const k = rebuild(x); if (k) { n += k; store.setSes(x); } } toast(n + ' resposta(s) recuperada(s).'); vDados(); }
     if (e.target.id === 'exp') {
       const blob = new Blob([JSON.stringify({ app: 'simulados-sefaz', v: 2, em: now(), prog: S.prog, ses: S.ses, disc: S.disc, prefs: S.prefs })], { type: 'application/json' });
       const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'backup-simulados-' + new Date().toISOString().slice(0, 10) + '.json'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 3000);
