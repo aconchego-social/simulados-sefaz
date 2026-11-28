@@ -120,7 +120,7 @@ function vVazio() {
 function vHome() {
   const all = Object.keys(Q); const a = agg(all);
   const abertas = Object.values(S.ses).filter(s => s.status === 'andamento').sort((x, y) => (y.u || 0) - (x.u || 0));
-  for (const s of abertas) if (rebuild(s)) store.setSes(s);
+  for (const s of Object.values(S.ses)) if (rebuild(s)) store.setSes(s);
   const nrev = all.filter(id => st(id).rev).length;
   app().innerHTML = `
   <div class="hdr"><span class="brand"><i class="dot"></i>Simulados SEFAZ-AL</span><span class="sp"></span>${syncPill()}</div>
@@ -271,10 +271,10 @@ function rebuild(s) {
   for (const qid of s.ord || []) {
     if (!Q[qid]) continue; const own = s.resp[qid];
     if (own && (own.r || own.redo)) continue;
-    const h = [...hist(qid)].reverse().find(x => x.r && x.r !== 'B' && (x.ses === s.id || (x.m === s.modo && x.t >= (s.ini || 0) && (!x.ses || !S.ses[x.ses]))));
+    const h = [...hist(qid)].reverse().find(x => x.r && x.r !== 'B' && (x.ses === s.id || (x.m === s.modo && x.t >= (s.ini || 0) && (s.status !== 'fim' || x.t <= (s.fim || 0) + 1000) && (!x.ses || !S.ses[x.ses]))));
     const p = st(qid).p;
     if (h) { s.resp[qid] = { r: h.r, c: h.c || 0, conf: true, t: h.t }; n++; }
-    else if (p && p.ses === s.id && p.r) { s.resp[qid] = { r: p.r, c: p.c || 0, t: p.t }; n++; }
+    else if (s.status !== 'fim' && p && p.ses === s.id && p.r) { s.resp[qid] = { r: p.r, c: p.c || 0, t: p.t }; n++; }
   }
   return n;
 }
@@ -518,6 +518,7 @@ function estrategias(lv) {
 }
 function vResult() {
   const s = S.ses[VIEW.ses]; if (!s) return go('home');
+  if (rebuild(s)) store.setSes(s);
   const sc = sesScore(s);
   const full = s.modo === 'prova' && s.ord.length >= 150;
   const byM = {}; for (const id of s.ord) { const q = Q[id]; if (q) (byM[q.materia] = byM[q.materia] || []).push(id); }
@@ -553,6 +554,7 @@ function vResult() {
 }
 function vHist() {
   const fins = Object.values(S.ses).filter(s => s.status === 'fim').sort((a, b) => b.fim - a.fim);
+  for (const s of fins) if (rebuild(s)) store.setSes(s);
   app().innerHTML = header('Histórico') + (fins.length ? `<div class="card">${fins.map(s => { const sc = sesScore(s); return `<div class="li"><div class="x"><span class="tag">${esc(MODOS[s.modo].nome)}</span><h3 style="margin-top:6px">${esc(s.nome)}</h3><div class="mut sm">${fmtD(s.fim)} · ${s.ord.length} itens${s.modo === 'prova' ? ' · ' + fmtT(s.gasto || 0) : ''}</div></div><div style="text-align:right"><b class="${sc.liq < 0 ? 'neg' : ''}">${sgn(sc.liq)}</b><div class="mut xs">${sc.c}C ${sc.e}E</div></div><button class="btn" data-s="${esc(s.id)}">Abrir</button></div>`; }).join('')}</div>`
     : '<div class="card empty">Nada encerrado ainda.</div>');
   app().onclick = e => { const b = e.target.closest('[data-s]'); if (b) go('result', { ses: b.dataset.s }); };
@@ -950,14 +952,14 @@ function vDados() {
   ${SIMS.map(s => `<div class="row sm"><span class="sp">${esc(s.nome)} · ${esc(s.data || '')}</span><span class="mut">${s.questoes.length} itens</span></div>`).join('') || '<p class="mut sm">Nenhum.</p>'}
   <label class="f" for="imp">Importar banco de questões (.json)</label><input type="file" id="imp" accept=".json,application/json">
   <p class="mut xs">Aceita o arquivo completo ou um simulado avulso. Um simulado com o mesmo identificador é substituído (o seu progresso é mantido).</p></div>
-  <div class="card gap" style="margin-top:12px"><h3>Sessões em andamento</h3>
-  ${Object.values(S.ses).filter(x => x.status === 'andamento').map(x => { const d = diag(x); return `<p class="sm"><b>${esc(x.nome)}</b> · ${esc(x.id)}<br>na sessão: ${d.resp} · corrigidos com este id: ${d.h} · pendentes com este id: ${d.p} · recuperáveis: ${d.rec}</p>`; }).join('') || '<p class="mut sm">Nenhuma.</p>'}
+  <div class="card gap" style="margin-top:12px"><h3>Sessões (diagnóstico)</h3>
+  ${Object.values(S.ses).sort((a, b) => (b.u || 0) - (a.u || 0)).map(x => { const d = diag(x); return `<p class="sm"><b>${esc(x.nome)}</b> · ${x.status === 'fim' ? 'encerrada' : 'em andamento'} · ${esc(x.id)}<br>na sessão: ${d.resp} · corrigidos com este id: ${d.h} · pendentes com este id: ${d.p} · recuperáveis: ${d.rec}</p>`; }).join('') || '<p class="mut sm">Nenhuma.</p>'}
   <button class="btn" id="repara">Reconstruir respostas das sessões</button><p class="mut xs">Versão do app: ${VERSAO}</p></div>
   <div class="card gap" style="margin-top:12px"><h3>Backup do progresso</h3>
   <div class="row"><button class="btn" id="exp">Baixar backup</button><label class="btn" style="display:inline-flex;align-items:center">Restaurar backup<input type="file" id="bkp" accept=".json" hidden></label></div></div>`;
   app().onclick = async e => {
     if (e.target.id === 'out') store.signOut();
-    if (e.target.id === 'repara') { let n = 0; for (const x of Object.values(S.ses)) if (x.status === 'andamento') { const k = rebuild(x); if (k) { n += k; store.setSes(x); } } toast(n + ' resposta(s) recuperada(s).'); vDados(); }
+    if (e.target.id === 'repara') { let n = 0; for (const x of Object.values(S.ses)) { const k = rebuild(x); if (k) { n += k; store.setSes(x); } } toast(n + ' resposta(s) recuperada(s).'); vDados(); }
     if (e.target.id === 'exp') {
       const blob = new Blob([JSON.stringify({ app: 'simulados-sefaz', v: 2, em: now(), prog: S.prog, ses: S.ses, disc: S.disc, prefs: S.prefs })], { type: 'application/json' });
       const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'backup-simulados-' + new Date().toISOString().slice(0, 10) + '.json'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 3000);
